@@ -3,7 +3,7 @@ import cors from "cors";
 import express from "express";
 import { createGeneratedImageUrl } from "./lib/engine";
 import { compareImageUrls } from "./lib/imageSimilarity";
-import { saveFeedback, saveSubmissionEvent } from "./lib/feedback";
+import { getFeedbackEntries, saveFeedback, saveSubmissionEvent } from "./lib/feedback";
 import {
   createSession,
   createPendingSubmission,
@@ -143,6 +143,25 @@ app.post("/api/state", (_req, res) => {
 
 app.get("/api/survey", (_req, res) => {
   res.json({ message: "Use POST /api/survey to submit feedback." });
+});
+
+app.get("/api/feedback", async (req, res) => {
+  try {
+    const querySession = typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
+    const sessionId = normalizeSessionId(querySession);
+    const rawLimit = typeof req.query.limit === "string" ? Number(req.query.limit) : undefined;
+    const limit = Number.isFinite(rawLimit) ? rawLimit : undefined;
+
+    const payload = await getFeedbackEntries({
+      sessionId,
+      limit,
+    });
+
+    res.json(payload);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to fetch feedback entries.";
+    res.status(500).json({ message });
+  }
 });
 
 app.post("/api/submit", async (req, res) => {

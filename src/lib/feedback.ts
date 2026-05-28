@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { SubmissionEvent, SurveyFeedback } from "./types";
@@ -289,6 +289,238 @@ export function saveFeedbackToCsv(feedback: SurveyFeedback) {
     .join(",");
 
   appendFileSync(FEEDBACK_FILE, `${row}\n`, "utf-8");
+}
+
+export type StoredFeedbackEntry = {
+  id?: number;
+  submittedAt: string;
+  gameId: string;
+  submissionId: string;
+  playerName: string;
+  challengeId: string;
+  challengeTitle: string;
+  submittedPrompt: string;
+  finalScore: number;
+  promptLength: number;
+  appUsesByPlayer: number;
+  applicationsUsed: string[];
+  worksWellAspects: string[];
+  improvementAreas: string[];
+  worksWellOther: string;
+  improvementOther: string;
+  additionalFeedback: string;
+  storage: "postgres" | "csv";
+};
+
+export type StoredFeedbackResponse = {
+  storageMode: "postgres" | "csv";
+  entries: StoredFeedbackEntry[];
+  fallbackReason?: string;
+};
+
+function toStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string");
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed.filter((item): item is string => typeof item === "string");
+      }
+    } catch {
+      return [trimmed];
+    }
+  }
+
+  return [];
+}
+
+function parseCsvLine(line: string): string[] {
+  const values: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+
+    if (char === '"') {
+      if (inQuotes && line[index + 1] === '"') {
+        current += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === "," && !inQuotes) {
+      values.push(current);
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  values.push(current);
+  return values;
+}
+
+function readFeedbackFromCsv(limit: number, sessionId?: string): StoredFeedbackEntry[] {
+  if (!existsSync(FEEDBACK_FILE)) {
+    return [];
+  }
+
+  const content = readFileSync(FEEDBACK_FILE, "utf-8").trim();
+  if (!content) {
+    return [];
+  }
+
+  const lines = content.split(/\r?\n/);
+  if (lines.length <= 1) {
+    return [];
+  }
+
+  const header = parseCsvLine(lines[0]);
+  const headerIndex = new Map(header.map((key, index) => [key, index]));
+
+  const getValue = (row: string[], key: string) => {
+    const index = headerIndex.get(key);
+    if (index === undefined) {
+      return "";
+    }
+    return row[index] ?? "";
+  };
+
+  const entries = lines
+    .slice(1)
+    .filter((line) => line.trim().length > 0)
+    .map((line) => parseCsvLine(line))
+    .map((row) => {
+      const gameId = getValue(row, "gameId") || "main";
+      return {
+        submittedAt: getValue(row, "submittedAt"),
+        gameId,
+        submissionId: getValue(row, "submissionId"),
+        playerName: getValue(row, "playerName"),
+        challengeId: getValue(row, "challengeId"),
+        challengeTitle: getValue(row, "challengeTitle"),
+        submittedPrompt: getValue(row, "submittedPrompt"),
+        finalScore: Number(getValue(row, "finalScore") || 0),
+        promptLength: Number(getValue(row, "promptLength") || 0),
+        appUsesByPlayer: Number(getValue(row, "appUsesByPlayer") || 0),
+        applicationsUsed: toStringArray(getValue(row, "applicationsUsed")),
+        worksWellAspects: toStringArray(getValue(row, "worksWellAspects")),
+        improvementAreas: toStringArray(getValue(row, "improvementAreas")),
+        worksWellOther: getValue(row, "worksWellOther"),
+        improvementOther: getValue(row, "improvementOther"),
+        additionalFeedback: getValue(row, "additionalFeedback"),
+        storage: "csv" as const,
+      };
+    })
+    .filter((entry) => !sessionId || entry.gameId === sessionId)
+    .reverse()
+    .slice(0, limit);
+
+  return entries;
+}
+
+export async function getFeedbackEntries(options?: {
+  sessionId?: string;
+  limit?: number;
+}): Promise<StoredFeedbackResponse> {
+  const requestedLimit = options?.limit ?? 1000;
+  const limit = Math.max(1, Math.min(requestedLimit, 5000));
+  const sessionId = options?.sessionId?.trim().toLowerCase();
+  const mode = getFeedbackStorageMode();
+
+  if (mode === "csv") {
+    return {
+      storageMode: "csv",
+      entries: readFeedbackFromCsv(limit, sessionId),
+    };
+  }
+
+  try {
+    await ensureFeedbackTable();
+    feedbackColumnsCache = null;
+    const columns = await getFeedbackColumns();
+
+    const params: unknown[] = [];
+    let whereClause = "";
+
+    if (sessionId) {
+      const sessionColumn = columns.has("session_id")
+        ? "session_id"
+        : columns.has("room_id")
+          ? "room_id"
+          : columns.has("game_id")
+            ? "game_id"
+            : null;
+
+      if (sessionColumn) {
+        params.push(sessionId);
+        whereClause = `WHERE ${sessionColumn} = $1`;
+      }
+    }
+
+    params.push(limit);
+    const limitParam = `$${params.length}`;
+
+    const result = await getPool().query<Record<string, unknown>>(
+      `
+        SELECT *
+        FROM survey_feedback
+        ${whereClause}
+        ORDER BY id DESC
+        LIMIT ${limitParam}
+      `,
+      params,
+    );
+
+    const entries: StoredFeedbackEntry[] = result.rows.map((row) => ({
+      id: typeof row.id === "number" ? row.id : Number(row.id ?? 0) || undefined,
+      submittedAt:
+        row.submitted_at instanceof Date
+          ? row.submitted_at.toISOString()
+          : String(row.submitted_at ?? new Date().toISOString()),
+      gameId: String(row.session_id ?? row.room_id ?? row.game_id ?? "main"),
+      submissionId: String(row.submission_id ?? ""),
+      playerName: String(row.player_name ?? ""),
+      challengeId: String(row.challenge_id ?? ""),
+      challengeTitle: String(row.challenge_title ?? ""),
+      submittedPrompt: String(row.submitted_prompt ?? ""),
+      finalScore: Number(row.final_score ?? 0),
+      promptLength: Number(row.prompt_length ?? 0),
+      appUsesByPlayer: Number(row.app_uses_by_player ?? 0),
+      applicationsUsed: toStringArray(row.applications_used ?? row.apps_used),
+      worksWellAspects: toStringArray(row.works_well_aspects ?? row.aspects_well),
+      improvementAreas: toStringArray(row.improvement_areas ?? row.improvements_needed),
+      worksWellOther: String(row.works_well_other ?? row.aspects_well_other ?? ""),
+      improvementOther: String(row.improvement_other ?? row.improvements_other ?? ""),
+      additionalFeedback: String(row.additional_feedback ?? row.additional_suggestions ?? ""),
+      storage: "postgres",
+    }));
+
+    return {
+      storageMode: "postgres",
+      entries,
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "Unable to read feedback from postgres.";
+    return {
+      storageMode: "csv",
+      entries: readFeedbackFromCsv(limit, sessionId),
+      fallbackReason: reason,
+    };
+  }
 }
 
 export function saveSubmissionToCsv(submission: SubmissionEvent) {
