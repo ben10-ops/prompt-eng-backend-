@@ -152,12 +152,13 @@ export function createGeneratedImageUrl(prompt: string, challengeId: string): st
   const orientationRule = getOrientationRule(prompt);
   const seed = seededNumber(`${challengeId}:${prompt}`);
   const userPrompt = prompt.replace(/\s+/g, " ").trim();
-  const target = challengeTitle.replace(/\s+/g, " ").trim();
   const optimizedPrompt = [
-    target ? `Target scene: ${target}. User intent: ${userPrompt}.` : `User intent: ${userPrompt}.`,
-    `Reference brief: ${referencePrompt}`,
+    `User prompt (highest priority): ${userPrompt}`,
+    "Follow the user prompt exactly. Do not replace subject, setting, or objects with unrelated content.",
+    "If the user prompt is not about cars, do not introduce cars, racetracks, or automotive elements.",
+    `Challenge reference for style/alignment only: ${referencePrompt}`,
     orientationRule,
-    "Preserve correct real-world car proportions. No stretched body, no warped wheels, no distorted geometry.",
+    "Preserve natural object proportions. No stretched, warped, elongated, or deformed geometry.",
     "Do not mirror the vehicle direction unless explicitly requested.",
     "Recreate the target scene as closely as possible while preserving realism.",
     "Photorealistic, physically based rendering, high detail textures.",
@@ -168,7 +169,7 @@ export function createGeneratedImageUrl(prompt: string, challengeId: string): st
 
   return `https://image.pollinations.ai/prompt/${encodeURIComponent(
     optimizedPrompt,
-  )}?model=flux&width=1280&height=720&seed=${seed}&enhance=true&nologo=true&safe=true`;
+  )}?model=flux&width=1024&height=1024&seed=${seed}&enhance=true&nologo=true&safe=true`;
 }
 
 export function createFallbackImageUrl(prompt: string, challengeId: string): string {
