@@ -28,11 +28,15 @@ function getFeedbackStorageMode(): "postgres" | "csv" {
 }
 
 function canFallbackToCsv() {
-  if (process.env.ALLOW_CSV_FALLBACK === "true") {
-    return true;
+  if (process.env.STRICT_POSTGRES_WRITES === "true") {
+    return false;
   }
 
-  return process.env.NODE_ENV !== "production";
+  if (process.env.ALLOW_CSV_FALLBACK === "false") {
+    return false;
+  }
+
+  return true;
 }
 
 function resolveDatabaseUrl(): string | undefined {
