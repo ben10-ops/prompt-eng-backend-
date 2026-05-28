@@ -74,6 +74,12 @@ async function ensureFeedbackTable() {
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS game_id TEXT NOT NULL DEFAULT 'main'`,
     );
     await client.query(
+      `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS room_id TEXT NOT NULL DEFAULT 'main'`,
+    );
+    await client.query(
+      `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT 'main'`,
+    );
+    await client.query(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS submitted_prompt TEXT NOT NULL DEFAULT ''`,
     );
     await client.query(
@@ -94,9 +100,30 @@ async function ensureFeedbackTable() {
     await client.query(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS additional_feedback TEXT NOT NULL DEFAULT ''`,
     );
+    await client.query(
+      `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS apps_used TEXT[] NOT NULL DEFAULT '{}'::text[]`,
+    );
+    await client.query(
+      `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS aspects_well TEXT[] NOT NULL DEFAULT '{}'::text[]`,
+    );
+    await client.query(
+      `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS aspects_well_other TEXT`,
+    );
+    await client.query(
+      `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS improvements_needed TEXT[] NOT NULL DEFAULT '{}'::text[]`,
+    );
+    await client.query(
+      `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS improvements_other TEXT`,
+    );
+    await client.query(
+      `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS additional_suggestions TEXT`,
+    );
 
     await client.query(
       `CREATE INDEX IF NOT EXISTS idx_survey_feedback_submission_id ON survey_feedback(submission_id)`,
+    );
+    await client.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_survey_feedback_submission_id ON survey_feedback(submission_id)`,
     );
     await client.query(
       `CREATE INDEX IF NOT EXISTS idx_survey_feedback_player_name ON survey_feedback(player_name)`,
@@ -302,6 +329,8 @@ export async function saveFeedback(feedback: SurveyFeedback) {
       INSERT INTO survey_feedback (
         submitted_at,
         game_id,
+        room_id,
+        session_id,
         submission_id,
         player_name,
         challenge_id,
@@ -315,13 +344,44 @@ export async function saveFeedback(feedback: SurveyFeedback) {
         improvement_areas,
         works_well_other,
         improvement_other,
-        additional_feedback
+        additional_feedback,
+        apps_used,
+        aspects_well,
+        aspects_well_other,
+        improvements_needed,
+        improvements_other,
+        additional_suggestions
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::jsonb, $14, $15, $16
-      )
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb, $15::jsonb, $16, $17, $18, $19::text[], $20::text[], $21, $22::text[], $23, $24
+      ) ON CONFLICT (submission_id) DO UPDATE SET
+        submitted_at = EXCLUDED.submitted_at,
+        game_id = EXCLUDED.game_id,
+        room_id = EXCLUDED.room_id,
+        session_id = EXCLUDED.session_id,
+        player_name = EXCLUDED.player_name,
+        challenge_id = EXCLUDED.challenge_id,
+        challenge_title = EXCLUDED.challenge_title,
+        submitted_prompt = EXCLUDED.submitted_prompt,
+        final_score = EXCLUDED.final_score,
+        prompt_length = EXCLUDED.prompt_length,
+        app_uses_by_player = EXCLUDED.app_uses_by_player,
+        applications_used = EXCLUDED.applications_used,
+        works_well_aspects = EXCLUDED.works_well_aspects,
+        improvement_areas = EXCLUDED.improvement_areas,
+        works_well_other = EXCLUDED.works_well_other,
+        improvement_other = EXCLUDED.improvement_other,
+        additional_feedback = EXCLUDED.additional_feedback,
+        apps_used = EXCLUDED.apps_used,
+        aspects_well = EXCLUDED.aspects_well,
+        aspects_well_other = EXCLUDED.aspects_well_other,
+        improvements_needed = EXCLUDED.improvements_needed,
+        improvements_other = EXCLUDED.improvements_other,
+        additional_suggestions = EXCLUDED.additional_suggestions
     `,
     [
       feedback.submittedAt,
+      feedback.gameId,
+      feedback.gameId,
       feedback.gameId,
       feedback.submissionId,
       feedback.playerName,
@@ -337,6 +397,12 @@ export async function saveFeedback(feedback: SurveyFeedback) {
       feedback.worksWellOther ?? null,
       feedback.improvementOther ?? null,
       feedback.additionalFeedback,
+      feedback.applicationsUsed,
+      feedback.worksWellAspects,
+      feedback.worksWellOther ?? null,
+      feedback.improvementAreas,
+      feedback.improvementOther ?? null,
+      feedback.additionalFeedback || null,
     ],
   );
 }

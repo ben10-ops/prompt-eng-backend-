@@ -192,16 +192,21 @@ app.post("/api/submit", async (req, res) => {
 
     const summary = getSessionSummary(sessionId);
 
-    await saveSubmissionEvent({
-      gameId: pending.sessionId ?? summary.sessionId,
-      submissionId: pending.id,
-      playerName: pending.playerName,
-      challengeId: pending.challenge.id,
-      challengeTitle: pending.challenge.title,
-      submittedPrompt: pending.prompt,
-      generatedImageUrl: pending.generatedImageUrl,
-      submittedAt: pending.createdAt,
-    });
+    try {
+      await saveSubmissionEvent({
+        gameId: pending.sessionId ?? summary.sessionId,
+        submissionId: pending.id,
+        playerName: pending.playerName,
+        challengeId: pending.challenge.id,
+        challengeTitle: pending.challenge.title,
+        submittedPrompt: pending.prompt,
+        generatedImageUrl: pending.generatedImageUrl,
+        submittedAt: pending.createdAt,
+      });
+    } catch (error) {
+      // Keep gameplay responsive even if telemetry write fails.
+      console.error("saveSubmissionEvent failed", error);
+    }
 
     res.status(201).json({
       pendingId: pending.id,
@@ -248,28 +253,57 @@ app.post("/api/survey", async (req, res) => {
 
   const pending = getPendingSubmissionById(submissionId, sessionId);
   if (!pending) {
-    res.status(404).json({ message: "Submission not found or already finalized." });
+    const finalized = getSubmissionById(submissionId, sessionId);
+    if (finalized) {
+      const retryFeedbackPayload: SurveyFeedback = {
+        gameId: finalized.sessionId ?? sessionId ?? "main",
+        submissionId: finalized.id,
+        playerName: finalized.playerName,
+        challengeId: finalized.challenge.id,
+        challengeTitle: finalized.challenge.title,
+        submittedPrompt: finalized.prompt,
+        finalScore: finalized.scores.finalScore,
+        promptLength: finalized.prompt.length,
+        appUsesByPlayer: getPlayerSubmissionCount(finalized.playerName, sessionId),
+        applicationsUsed,
+        worksWellAspects,
+        improvementAreas,
+        worksWellOther,
+        improvementOther,
+        additionalFeedback,
+        submittedAt: new Date().toISOString(),
+      };
+
+      try {
+        await saveFeedback(retryFeedbackPayload);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unable to store feedback.";
+        res.status(500).json({ message });
+        return;
+      }
+
+      res.status(200).json({
+        id: finalized.id,
+        resultUrl: `/result/${finalized.id}`,
+        status: "already_finalized",
+      });
+      return;
+    }
+
+    res.status(404).json({ message: "Submission not found." });
     return;
   }
-
-  const submission = finalizePendingSubmission(submissionId, sessionId);
-  if (!submission) {
-    res.status(500).json({ message: "Unable to finalize this submission." });
-    return;
-  }
-
-  const appUsesByPlayer = getPlayerSubmissionCount(submission.playerName, sessionId);
 
   const feedbackPayload: SurveyFeedback = {
-    gameId: submission.sessionId ?? sessionId ?? "main",
-    submissionId: submission.id,
-    playerName: submission.playerName,
-    challengeId: submission.challenge.id,
-    challengeTitle: submission.challenge.title,
-    submittedPrompt: submission.prompt,
-    finalScore: submission.scores.finalScore,
-    promptLength: submission.prompt.length,
-    appUsesByPlayer,
+    gameId: pending.sessionId ?? sessionId ?? "main",
+    submissionId: pending.id,
+    playerName: pending.playerName,
+    challengeId: pending.challenge.id,
+    challengeTitle: pending.challenge.title,
+    submittedPrompt: pending.prompt,
+    finalScore: pending.scores.finalScore,
+    promptLength: pending.prompt.length,
+    appUsesByPlayer: getPlayerSubmissionCount(pending.playerName, sessionId) + 1,
     applicationsUsed,
     worksWellAspects,
     improvementAreas,
@@ -284,6 +318,12 @@ app.post("/api/survey", async (req, res) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to store feedback.";
     res.status(500).json({ message });
+    return;
+  }
+
+  const submission = finalizePendingSubmission(submissionId, sessionId);
+  if (!submission) {
+    res.status(500).json({ message: "Unable to finalize this submission." });
     return;
   }
 
