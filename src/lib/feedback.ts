@@ -356,12 +356,28 @@ export async function saveFeedback(feedback: SurveyFeedback) {
     return;
   }
 
-  await ensureFeedbackTable();
+  try {
+    await ensureFeedbackTable();
+  } catch (error) {
+    console.error("saveFeedback: ensureFeedbackTable failed, falling back to CSV", error);
+    saveFeedbackToCsv(feedback);
+    return;
+  }
   feedbackColumnsCache = null;
-  const columns = await getFeedbackColumns();
+
+  let columns: Set<string>;
+  try {
+    columns = await getFeedbackColumns();
+  } catch (error) {
+    console.error("saveFeedback: getFeedbackColumns failed, falling back to CSV", error);
+    saveFeedbackToCsv(feedback);
+    return;
+  }
 
   if (!columns.has("submission_id")) {
-    throw new Error("survey_feedback.submission_id column is required.");
+    console.error("saveFeedback: submission_id column missing, falling back to CSV");
+    saveFeedbackToCsv(feedback);
+    return;
   }
 
   const values: unknown[] = [];
@@ -405,16 +421,23 @@ export async function saveFeedback(feedback: SurveyFeedback) {
   pushValue("additional_suggestions", feedback.additionalFeedback || null);
 
   if (insertColumns.length === 0) {
-    throw new Error("survey_feedback table has no writable columns.");
+    console.error("saveFeedback: no writable columns, falling back to CSV");
+    saveFeedbackToCsv(feedback);
+    return;
   }
 
-  await getPool().query(`DELETE FROM survey_feedback WHERE submission_id = $1`, [feedback.submissionId]);
+  try {
+    await getPool().query(`DELETE FROM survey_feedback WHERE submission_id = $1`, [feedback.submissionId]);
 
-  await getPool().query(
-    `
-      INSERT INTO survey_feedback (${insertColumns.join(", ")})
-      VALUES (${valueExpressions.join(", ")})
-    `,
-    values,
-  );
+    await getPool().query(
+      `
+        INSERT INTO survey_feedback (${insertColumns.join(", ")})
+        VALUES (${valueExpressions.join(", ")})
+      `,
+      values,
+    );
+  } catch (error) {
+    console.error("saveFeedback: postgres insert failed, falling back to CSV", error);
+    saveFeedbackToCsv(feedback);
+  }
 }
