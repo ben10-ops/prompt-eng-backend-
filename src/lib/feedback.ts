@@ -8,6 +8,7 @@ const FEEDBACK_FILE = path.join(DATA_DIR, "promptwars-feedback.csv");
 const SUBMISSION_FILE = path.join(DATA_DIR, "promptwars-submissions.csv");
 
 let pool: Pool | null = null;
+let poolConnectionString: string | null = null;
 let feedbackTableReady = false;
 let submissionTableReady = false;
 let feedbackColumnsCache: Set<string> | null = null;
@@ -23,20 +24,43 @@ function getFeedbackStorageMode(): "postgres" | "csv" {
     return "postgres";
   }
 
-  return process.env.DATABASE_URL ? "postgres" : "csv";
+  return resolveDatabaseUrl() ? "postgres" : "csv";
+}
+
+function resolveDatabaseUrl(): string | undefined {
+  const onlineUrl = process.env.ONLINE_DATABASE_URL?.trim();
+  const localUrl = process.env.LOCAL_DATABASE_URL?.trim();
+  const fallbackUrl = process.env.DATABASE_URL?.trim();
+
+  if (process.env.NODE_ENV === "production") {
+    return onlineUrl || fallbackUrl;
+  }
+
+  return localUrl || fallbackUrl;
 }
 
 function getPool() {
-  const databaseUrl = process.env.DATABASE_URL;
+  const databaseUrl = resolveDatabaseUrl();
   if (!databaseUrl) {
-    throw new Error("DATABASE_URL is required when FEEDBACK_STORAGE is postgres.");
+    throw new Error(
+      "LOCAL_DATABASE_URL/ONLINE_DATABASE_URL (or DATABASE_URL fallback) is required when FEEDBACK_STORAGE is postgres.",
+    );
   }
 
-  if (!pool) {
+  if (!pool || poolConnectionString !== databaseUrl) {
+    if (pool) {
+      void pool.end().catch(() => undefined);
+    }
+
     pool = new Pool({
       connectionString: databaseUrl,
       ssl: process.env.PGSSL === "true" ? { rejectUnauthorized: false } : undefined,
     });
+
+    poolConnectionString = databaseUrl;
+    feedbackTableReady = false;
+    submissionTableReady = false;
+    feedbackColumnsCache = null;
   }
 
   return pool;
