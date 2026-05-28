@@ -5,15 +5,19 @@ import { createGeneratedImageUrl } from "./lib/engine";
 import { compareImageUrls } from "./lib/imageSimilarity";
 import { saveFeedback } from "./lib/feedback";
 import {
+  createSession,
   createPendingSubmission,
   finalizePendingSubmission,
   getCurrentChallenge,
+  getCurrentPlayerCount,
   getPendingSubmissionById,
   getPlayerSubmissionCount,
   getRecentPendingSubmissions,
   getRecentSubmissions,
+  getSessionSummary,
   getSubmissionById,
   getSubmissions,
+  isSessionAtCapacity,
   rotateChallenge,
 } from "./lib/store";
 import { SurveyFeedback } from "./lib/types";
@@ -67,19 +71,63 @@ function toAbsoluteUrl(maybeRelative: string): string {
   return new URL(maybeRelative, frontendUrl).toString();
 }
 
+function normalizeSessionId(raw?: string): string | undefined {
+  const value = raw?.trim().toLowerCase();
+  return value ? value : undefined;
+}
+
+function getSessionIdFromRequest(req: express.Request): string | undefined {
+  const querySession = typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
+  const headerSession = typeof req.headers["x-session-id"] === "string"
+    ? req.headers["x-session-id"]
+    : undefined;
+  const bodySession =
+    typeof req.body === "object" && req.body !== null && "sessionId" in req.body
+      ? String((req.body as { sessionId?: string }).sessionId ?? "")
+      : undefined;
+
+  return normalizeSessionId(querySession ?? bodySession ?? headerSession);
+}
+
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-app.get("/api/state", (_req, res) => {
-  const submissions = getSubmissions();
-  const recentResults = getRecentSubmissions(4);
-  const pendingResults = getRecentPendingSubmissions(4);
+app.post("/api/session", (req, res) => {
+  const body = req.body as { sessionId?: string };
+  const requestedSessionId = normalizeSessionId(body.sessionId);
+  const session = createSession(requestedSessionId);
+
+  res.status(201).json({
+    sessionId: session.sessionId,
+    maxPlayers: session.maxPlayers,
+    joinUrl: `/join?sessionId=${encodeURIComponent(session.sessionId)}`,
+    screenUrl: `/screen?sessionId=${encodeURIComponent(session.sessionId)}`,
+  });
+});
+
+app.get("/api/session/:id", (req, res) => {
+  const sessionId = normalizeSessionId(req.params.id);
+  const summary = getSessionSummary(sessionId);
+  res.json(summary);
+});
+
+app.get("/api/state", (req, res) => {
+  const sessionId = getSessionIdFromRequest(req);
+  const submissions = getSubmissions(sessionId);
+  const leaderboard = submissions.slice(0, 5);
+  const recentResults = getRecentSubmissions(4, sessionId);
+  const pendingResults = getRecentPendingSubmissions(4, sessionId);
+  const summary = getSessionSummary(sessionId);
 
   res.json({
-    challenge: getCurrentChallenge(),
+    sessionId: summary.sessionId,
+    maxPlayers: summary.maxPlayers,
+    currentPlayers: summary.currentPlayers,
+    isAtCapacity: isSessionAtCapacity(summary.sessionId),
+    challenge: getCurrentChallenge(summary.sessionId),
     submissions,
-    leaderboard: submissions.slice(0, 8),
+    leaderboard,
     latest: recentResults[0] ?? null,
     recentResults,
     pendingResults,
@@ -87,8 +135,10 @@ app.get("/api/state", (_req, res) => {
 });
 
 app.post("/api/state", (_req, res) => {
-  const challenge = rotateChallenge();
-  res.json({ challenge });
+  const sessionId = getSessionIdFromRequest(_req);
+  const challenge = rotateChallenge(sessionId);
+  const summary = getSessionSummary(sessionId);
+  res.json({ challenge, sessionId: summary.sessionId });
 });
 
 app.get("/api/survey", (_req, res) => {
@@ -97,7 +147,9 @@ app.get("/api/survey", (_req, res) => {
 
 app.post("/api/submit", async (req, res) => {
   try {
+    const sessionId = getSessionIdFromRequest(req);
     const body = req.body as {
+      sessionId?: string;
       playerName?: string;
       prompt?: string;
     };
@@ -115,7 +167,7 @@ app.post("/api/submit", async (req, res) => {
       return;
     }
 
-    const challenge = getCurrentChallenge();
+    const challenge = getCurrentChallenge(sessionId);
     const generatedImageUrl = toAbsoluteUrl(createGeneratedImageUrl(prompt, challenge.id));
 
     let imageSimilarity: number | undefined = undefined;
@@ -131,15 +183,19 @@ app.post("/api/submit", async (req, res) => {
     }
 
     const pending = createPendingSubmission({
+      sessionId,
       playerName,
       prompt,
       generatedImageUrl,
       imageSimilarity,
     });
 
+    const summary = getSessionSummary(sessionId);
+
     res.status(201).json({
       pendingId: pending.id,
-      surveyUrl: `/survey/${pending.id}`,
+      sessionId: summary.sessionId,
+      surveyUrl: `/survey/${pending.id}?sessionId=${encodeURIComponent(summary.sessionId)}`,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to submit prompt.";
@@ -148,7 +204,9 @@ app.post("/api/submit", async (req, res) => {
 });
 
 app.post("/api/survey", async (req, res) => {
+  const sessionId = getSessionIdFromRequest(req);
   const body = req.body as {
+    sessionId?: string;
     submissionId?: string;
     applicationsUsed?: string[];
     worksWellAspects?: string[];
@@ -177,19 +235,19 @@ app.post("/api/survey", async (req, res) => {
     return;
   }
 
-  const pending = getPendingSubmissionById(submissionId);
+  const pending = getPendingSubmissionById(submissionId, sessionId);
   if (!pending) {
     res.status(404).json({ message: "Submission not found or already finalized." });
     return;
   }
 
-  const submission = finalizePendingSubmission(submissionId);
+  const submission = finalizePendingSubmission(submissionId, sessionId);
   if (!submission) {
     res.status(500).json({ message: "Unable to finalize this submission." });
     return;
   }
 
-  const appUsesByPlayer = getPlayerSubmissionCount(submission.playerName);
+  const appUsesByPlayer = getPlayerSubmissionCount(submission.playerName, sessionId);
 
   const feedbackPayload: SurveyFeedback = {
     submissionId: submission.id,
@@ -223,15 +281,16 @@ app.post("/api/survey", async (req, res) => {
 });
 
 app.get("/api/submission/:id", (req, res) => {
+  const sessionId = getSessionIdFromRequest(req);
   const id = req.params.id;
 
-  const pending = getPendingSubmissionById(id);
+  const pending = getPendingSubmissionById(id, sessionId);
   if (pending) {
     res.json({ status: "pending", submission: pending });
     return;
   }
 
-  const finalized = getSubmissionById(id);
+  const finalized = getSubmissionById(id, sessionId);
   if (finalized) {
     res.json({ status: "finalized", submission: finalized });
     return;

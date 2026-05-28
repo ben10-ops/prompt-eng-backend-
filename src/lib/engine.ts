@@ -2,24 +2,134 @@ import { Challenge, PromptPersona, ScoreBreakdown } from "./types";
 
 export const CHALLENGES: Challenge[] = [
   {
-    id: "futuristic-mobility-hub",
-    title: "Futuristic Mobility Hub",
+    id: "image-1-golf-gti-coastal",
+    title: "Image 1 - Golf GTI Coastal",
     category: "easy",
-    imageUrl: "/vw1.jpg",
+    imageUrl: "/image/img%201.jpg",
   },
   {
-    id: "enterprise-command-center",
-    title: "Enterprise AI Command Center",
+    id: "image-2-beetle-alpine",
+    title: "Image 2 - Beetle Alpine Drive",
     category: "medium",
-    imageUrl: "/1087477.jpg",
+    imageUrl: "/image/image%202.jpg",
   },
   {
-    id: "holographic-operations-lab",
-    title: "Holographic Operations Lab",
+    id: "image-4-id4-harbor",
+    title: "Image 4 - ID.4 Harbor",
+    category: "medium",
+    imageUrl: "/image/image%204.jpg",
+  },
+  {
+    id: "image-5-gti-night-track",
+    title: "Image 5 - GTI Night Track",
     category: "hard",
-    imageUrl: "/1087484.jpg",
+    imageUrl: "/image/image%205.jpg",
   },
 ];
+
+const CHALLENGE_REFERENCE_PROMPTS: Record<string, string> = {
+  "image-1-golf-gti-coastal":
+    "Cinematic photorealistic red Volkswagen Golf GTI hatchback parked on wet coastal asphalt at golden hour, front three-quarter angle facing slightly left, dramatic coastal mountains and ocean background, glossy pavement reflections, premium automotive advertisement style, realistic materials and lighting.",
+  "image-2-beetle-alpine":
+    "Cinematic photorealistic white Volkswagen Beetle in dynamic motion on a winding alpine mountain road, slightly elevated front three-quarter tracking perspective, background motion blur with sharp car subject, rocky cliffs, overcast daylight, premium road-trip automotive commercial composition.",
+  "image-4-id4-harbor":
+    "Highly realistic metallic electric blue Volkswagen ID.4 crossover SUV on a modern European waterfront promenade, front three-quarter angle facing slightly left, contemporary harbor with boats and cranes, soft overcast daylight, clean press-photography style, balanced urban composition and realistic reflections.",
+  "image-5-gti-night-track":
+    "Cinematic ultra-realistic modified metallic gray Volkswagen GTI concept race car on a wet racetrack at stormy night, dramatic low-angle front three-quarter perspective facing slightly right, aggressive aero body kit, glowing red LED arrow lights in background, strong volumetric lighting, glossy reflective asphalt, high-end futuristic automotive advertisement look.",
+};
+
+function tokenize(value: string): string[] {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter((token) => token.length > 2);
+}
+
+function scoreTextAlignment(prompt: string, challengeId: string): number {
+  const reference = CHALLENGE_REFERENCE_PROMPTS[challengeId] ?? "";
+  const promptTokens = new Set(tokenize(prompt));
+  const referenceTokens = tokenize(reference);
+
+  if (referenceTokens.length === 0) {
+    return 60;
+  }
+
+  const matched = referenceTokens.filter((token) => promptTokens.has(token)).length;
+  const ratio = matched / referenceTokens.length;
+  return clamp(Math.round(45 + ratio * 55), 30, 99);
+}
+
+function getOrientationRule(prompt: string): string {
+  const text = prompt.toLowerCase();
+  const hasRight = /\bright\s*(facing|side|profile)?\b/.test(text) || /\bface\s*right\b/.test(text);
+  const hasLeft = /\bleft\s*(facing|side|profile)?\b/.test(text) || /\bface\s*left\b/.test(text);
+
+  if (hasRight && !hasLeft) {
+    return "Primary subject must face right. Do not mirror to left-facing orientation.";
+  }
+
+  if (hasLeft && !hasRight) {
+    return "Primary subject must face left. Do not mirror to right-facing orientation.";
+  }
+
+  return "Keep subject orientation exactly as requested in the user prompt.";
+}
+
+function getRequestedOrientation(prompt: string): "left" | "right" | null {
+  const text = prompt.toLowerCase();
+  const hasRight =
+    /\bright\s*(facing|side|profile)?\b/.test(text) ||
+    /\bface\s*right\b/.test(text) ||
+    /\bfacing\s*toward\s*the\s*right\b/.test(text);
+  const hasLeft =
+    /\bleft\s*(facing|side|profile)?\b/.test(text) ||
+    /\bface\s*left\b/.test(text) ||
+    /\bfacing\s*toward\s*the\s*left\b/.test(text);
+
+  if (hasRight && !hasLeft) {
+    return "right";
+  }
+
+  if (hasLeft && !hasRight) {
+    return "left";
+  }
+
+  return null;
+}
+
+function applyOrientationOverride(referencePrompt: string, prompt: string): string {
+  const requested = getRequestedOrientation(prompt);
+  if (!requested) {
+    return referencePrompt;
+  }
+
+  const toRight = requested === "right";
+  const toReplace = toRight
+    ? [
+        /facing\s+slightly\s+toward\s+the\s+left/gi,
+        /facing\s+left/gi,
+        /face\s+left/gi,
+        /left-facing/gi,
+      ]
+    : [
+        /facing\s+slightly\s+toward\s+the\s+right/gi,
+        /facing\s+right/gi,
+        /face\s+right/gi,
+        /right-facing/gi,
+      ];
+
+  const replacement = toRight
+    ? "facing slightly toward the right"
+    : "facing slightly toward the left";
+
+  let updated = referencePrompt;
+  for (const pattern of toReplace) {
+    updated = updated.replace(pattern, replacement);
+  }
+
+  return `${updated} Orientation override: subject must face ${requested}, never mirrored to the opposite direction.`;
+}
 
 export function seededNumber(input: string): number {
   let hash = 0;
@@ -37,11 +147,18 @@ function clamp(value: number, min: number, max: number): number {
 export function createGeneratedImageUrl(prompt: string, challengeId: string): string {
   const challenge = CHALLENGES.find((item) => item.id === challengeId);
   const challengeTitle = challenge?.title ?? "";
+  const baseReferencePrompt = CHALLENGE_REFERENCE_PROMPTS[challengeId] ?? challengeTitle;
+  const referencePrompt = applyOrientationOverride(baseReferencePrompt, prompt);
+  const orientationRule = getOrientationRule(prompt);
   const seed = seededNumber(`${challengeId}:${prompt}`);
   const userPrompt = prompt.replace(/\s+/g, " ").trim();
   const target = challengeTitle.replace(/\s+/g, " ").trim();
   const optimizedPrompt = [
     target ? `Target scene: ${target}. User intent: ${userPrompt}.` : `User intent: ${userPrompt}.`,
+    `Reference brief: ${referencePrompt}`,
+    orientationRule,
+    "Preserve correct real-world car proportions. No stretched body, no warped wheels, no distorted geometry.",
+    "Do not mirror the vehicle direction unless explicitly requested.",
     "Recreate the target scene as closely as possible while preserving realism.",
     "Photorealistic, physically based rendering, high detail textures.",
     "Accurate perspective, coherent composition, natural lighting, realistic shadows and reflections.",
@@ -97,15 +214,18 @@ export function scorePrompt(
   const cinematicHits = cinematicTerms.filter((t) => text.includes(t)).length;
   const technicalHits = technicalTerms.filter((t) => text.includes(t)).length;
   const richness = clamp(Math.round((tokenCount / 45) * 100), 20, 100);
-  const seeded = seededNumber(`${prompt}:${challenge.id}`) % 100;
+  const textSimilarity = scoreTextAlignment(prompt, challenge.id);
+  const orientationRule = getOrientationRule(prompt);
+  const orientationBonus =
+    orientationRule.includes("face right") || orientationRule.includes("face left") ? 6 : 0;
 
-  const heuristicSimilarity = clamp(
-    Math.round(55 + seeded * 0.4 + cinematicHits * 3),
-    45,
-    98,
-  );
+  const heuristicSimilarity = clamp(textSimilarity + orientationBonus, 35, 99);
   const similarity = clamp(
-    Math.round(options?.imageSimilarity ?? heuristicSimilarity),
+    Math.round(
+      options?.imageSimilarity !== undefined
+        ? heuristicSimilarity * 0.7 + options.imageSimilarity * 0.3
+        : heuristicSimilarity,
+    ),
     0,
     100,
   );
