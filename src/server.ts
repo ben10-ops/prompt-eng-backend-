@@ -96,57 +96,55 @@ app.get("/api/survey", (_req, res) => {
 });
 
 app.post("/api/submit", async (req, res) => {
-  const body = req.body as {
-    playerName?: string;
-    prompt?: string;
-  };
-
-  const playerName = body.playerName?.trim();
-  const prompt = body.prompt?.trim();
-
-  if (!playerName || !prompt) {
-    res.status(400).json({ message: "playerName and prompt are required." });
-    return;
-  }
-
-  if (prompt.length < 15) {
-    res.status(400).json({ message: "Prompt is too short. Add more scene detail." });
-    return;
-  }
-
-  const challenge = getCurrentChallenge();
-  const generatedImageUrl = toAbsoluteUrl(createGeneratedImageUrl(prompt, challenge.id));
-
-  let imageSimilarity: number | undefined = undefined;
-  if (shouldRunImageSimilarity()) {
-    try {
-      imageSimilarity = await compareImageUrls(
-        toAbsoluteUrl(challenge.imageUrl),
-        generatedImageUrl,
-      );
-    } catch {
-      imageSimilarity = undefined;
-    }
-  }
-
-  let pending;
   try {
-    pending = createPendingSubmission({
+    const body = req.body as {
+      playerName?: string;
+      prompt?: string;
+    };
+
+    const playerName = body.playerName?.trim();
+    const prompt = body.prompt?.trim();
+
+    if (!playerName || !prompt) {
+      res.status(400).json({ message: "playerName and prompt are required." });
+      return;
+    }
+
+    if (prompt.length < 15) {
+      res.status(400).json({ message: "Prompt is too short. Add more scene detail." });
+      return;
+    }
+
+    const challenge = getCurrentChallenge();
+    const generatedImageUrl = toAbsoluteUrl(createGeneratedImageUrl(prompt, challenge.id));
+
+    let imageSimilarity: number | undefined = undefined;
+    if (shouldRunImageSimilarity()) {
+      try {
+        imageSimilarity = await compareImageUrls(
+          toAbsoluteUrl(challenge.imageUrl),
+          generatedImageUrl,
+        );
+      } catch {
+        imageSimilarity = undefined;
+      }
+    }
+
+    const pending = createPendingSubmission({
       playerName,
       prompt,
       generatedImageUrl,
       imageSimilarity,
     });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to create submission.";
-    res.status(500).json({ message });
-    return;
-  }
 
-  res.status(201).json({
-    pendingId: pending.id,
-    surveyUrl: `/survey/${pending.id}`,
-  });
+    res.status(201).json({
+      pendingId: pending.id,
+      surveyUrl: `/survey/${pending.id}`,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to submit prompt.";
+    res.status(500).json({ message });
+  }
 });
 
 app.post("/api/survey", async (req, res) => {
@@ -240,6 +238,11 @@ app.get("/api/submission/:id", (req, res) => {
   }
 
   res.status(404).json({ message: "Submission not found." });
+});
+
+app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const message = error instanceof Error ? error.message : "Internal server error.";
+  res.status(500).json({ message });
 });
 
 app.listen(port, () => {
