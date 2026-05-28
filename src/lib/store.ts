@@ -39,6 +39,10 @@ export function getRecentSubmissions(limit = 4) {
   return store.submissions.slice(0, limit);
 }
 
+export function getRecentPendingSubmissions(limit = 4) {
+  return store.pendingSubmissions.slice(0, limit);
+}
+
 export function getSubmissionById(id: string) {
   return store.submissions.find((submission) => submission.id === id) ?? null;
 }

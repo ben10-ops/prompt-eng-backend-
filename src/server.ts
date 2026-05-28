@@ -10,6 +10,7 @@ import {
   getCurrentChallenge,
   getPendingSubmissionById,
   getPlayerSubmissionCount,
+  getRecentPendingSubmissions,
   getRecentSubmissions,
   getSubmissionById,
   getSubmissions,
@@ -22,7 +23,40 @@ const port = Number(process.env.PORT ?? 4000);
 const frontendUrl =
   process.env.FRONTEND_URL ?? "https://prompt-war-six.vercel.app";
 
-app.use(cors({ origin: true }));
+const allowedOrigins = new Set([
+  frontendUrl,
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "https://prompt-war-six.vercel.app",
+]);
+
+function isLocalOrigin(origin: string): boolean {
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+}
+
+function shouldRunImageSimilarity() {
+  if (process.env.DISABLE_IMAGE_SIMILARITY === "true") {
+    return false;
+  }
+
+  return process.env.NODE_ENV !== "production";
+}
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.has(origin) || isLocalOrigin(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error("Not allowed by CORS"));
+    },
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  }),
+);
+app.options("*", cors());
 app.use(express.json({ limit: "1mb" }));
 
 function toAbsoluteUrl(maybeRelative: string): string {
@@ -40,6 +74,7 @@ app.get("/api/health", (_req, res) => {
 app.get("/api/state", (_req, res) => {
   const submissions = getSubmissions();
   const recentResults = getRecentSubmissions(4);
+  const pendingResults = getRecentPendingSubmissions(4);
 
   res.json({
     challenge: getCurrentChallenge(),
@@ -47,6 +82,7 @@ app.get("/api/state", (_req, res) => {
     leaderboard: submissions.slice(0, 8),
     latest: recentResults[0] ?? null,
     recentResults,
+    pendingResults,
   });
 });
 
@@ -81,22 +117,31 @@ app.post("/api/submit", async (req, res) => {
   const challenge = getCurrentChallenge();
   const generatedImageUrl = toAbsoluteUrl(createGeneratedImageUrl(prompt, challenge.id));
 
-  let imageSimilarity: number | undefined;
-  try {
-    imageSimilarity = await compareImageUrls(
-      toAbsoluteUrl(challenge.imageUrl),
-      generatedImageUrl,
-    );
-  } catch {
-    imageSimilarity = undefined;
+  let imageSimilarity: number | undefined = undefined;
+  if (shouldRunImageSimilarity()) {
+    try {
+      imageSimilarity = await compareImageUrls(
+        toAbsoluteUrl(challenge.imageUrl),
+        generatedImageUrl,
+      );
+    } catch {
+      imageSimilarity = undefined;
+    }
   }
 
-  const pending = createPendingSubmission({
-    playerName,
-    prompt,
-    generatedImageUrl,
-    imageSimilarity,
-  });
+  let pending;
+  try {
+    pending = createPendingSubmission({
+      playerName,
+      prompt,
+      generatedImageUrl,
+      imageSimilarity,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to create submission.";
+    res.status(500).json({ message });
+    return;
+  }
 
   res.status(201).json({
     pendingId: pending.id,
