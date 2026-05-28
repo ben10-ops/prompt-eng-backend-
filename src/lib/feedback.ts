@@ -122,9 +122,15 @@ async function ensureFeedbackTable() {
     await client.query(
       `CREATE INDEX IF NOT EXISTS idx_survey_feedback_submission_id ON survey_feedback(submission_id)`,
     );
-    await client.query(
-      `CREATE UNIQUE INDEX IF NOT EXISTS uq_survey_feedback_submission_id ON survey_feedback(submission_id)`,
-    );
+    try {
+      await client.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS uq_survey_feedback_submission_id ON survey_feedback(submission_id)`,
+      );
+    } catch (error) {
+      // Older hosted datasets can contain duplicate submission_id values.
+      // Keep writes working by falling back to delete+insert idempotency.
+      console.warn("Unable to create unique index uq_survey_feedback_submission_id", error);
+    }
     await client.query(
       `CREATE INDEX IF NOT EXISTS idx_survey_feedback_player_name ON survey_feedback(player_name)`,
     );
@@ -326,6 +332,10 @@ export async function saveFeedback(feedback: SurveyFeedback) {
   await ensureFeedbackTable();
   await getPool().query(
     `
+      WITH deleted AS (
+        DELETE FROM survey_feedback
+        WHERE submission_id = $5
+      )
       INSERT INTO survey_feedback (
         submitted_at,
         game_id,
@@ -353,30 +363,7 @@ export async function saveFeedback(feedback: SurveyFeedback) {
         additional_suggestions
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb, $15::jsonb, $16, $17, $18, $19::text[], $20::text[], $21, $22::text[], $23, $24
-      ) ON CONFLICT (submission_id) DO UPDATE SET
-        submitted_at = EXCLUDED.submitted_at,
-        game_id = EXCLUDED.game_id,
-        room_id = EXCLUDED.room_id,
-        session_id = EXCLUDED.session_id,
-        player_name = EXCLUDED.player_name,
-        challenge_id = EXCLUDED.challenge_id,
-        challenge_title = EXCLUDED.challenge_title,
-        submitted_prompt = EXCLUDED.submitted_prompt,
-        final_score = EXCLUDED.final_score,
-        prompt_length = EXCLUDED.prompt_length,
-        app_uses_by_player = EXCLUDED.app_uses_by_player,
-        applications_used = EXCLUDED.applications_used,
-        works_well_aspects = EXCLUDED.works_well_aspects,
-        improvement_areas = EXCLUDED.improvement_areas,
-        works_well_other = EXCLUDED.works_well_other,
-        improvement_other = EXCLUDED.improvement_other,
-        additional_feedback = EXCLUDED.additional_feedback,
-        apps_used = EXCLUDED.apps_used,
-        aspects_well = EXCLUDED.aspects_well,
-        aspects_well_other = EXCLUDED.aspects_well_other,
-        improvements_needed = EXCLUDED.improvements_needed,
-        improvements_other = EXCLUDED.improvements_other,
-        additional_suggestions = EXCLUDED.additional_suggestions
+      )
     `,
     [
       feedback.submittedAt,

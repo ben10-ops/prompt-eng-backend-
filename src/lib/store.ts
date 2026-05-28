@@ -10,6 +10,7 @@ import {
 import { PlayerSubmission } from "./types";
 
 const CHALLENGE_ROTATION_MS = 10 * 60 * 1000;
+const SESSION_WINDOW_MS = 10 * 60 * 1000;
 
 declare global {
   var __promptWarsStore: PromptWarsStore | undefined;
@@ -35,6 +36,7 @@ function ensureSession(sessionId?: string): PromptWarsSessionStore {
   const id = sanitizeSessionId(sessionId);
   const existing = store.sessions[id];
   if (existing) {
+    maybeRotateSessionWindow(existing);
     return existing;
   }
 
@@ -51,6 +53,27 @@ function ensureSession(sessionId?: string): PromptWarsSessionStore {
   store.sessions[id] = created;
   persistStore();
   return created;
+}
+
+function maybeRotateSessionWindow(session: PromptWarsSessionStore) {
+  const startedAt = Date.parse(session.createdAt);
+  const now = Date.now();
+
+  if (Number.isNaN(startedAt)) {
+    session.createdAt = new Date(now).toISOString();
+    persistStore();
+    return;
+  }
+
+  if (now - startedAt < SESSION_WINDOW_MS) {
+    return;
+  }
+
+  session.createdAt = new Date(now).toISOString();
+  session.lastChallengeRotationAt = new Date(now).toISOString();
+  session.submissions = [];
+  session.pendingSubmissions = [];
+  persistStore();
 }
 
 function getAllSessions() {
