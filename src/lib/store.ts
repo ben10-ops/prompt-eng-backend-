@@ -214,6 +214,7 @@ export function createPendingSubmission(input: {
 
   const submission: PlayerSubmission = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    sessionId: session.id,
     playerName: input.playerName,
     prompt: input.prompt,
     challenge,

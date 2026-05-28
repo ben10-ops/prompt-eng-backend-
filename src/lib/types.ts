@@ -23,6 +23,7 @@ export type Challenge = {
 
 export type PlayerSubmission = {
   id: string;
+  sessionId?: string;
   playerName: string;
   prompt: string;
   challenge: Challenge;
@@ -33,10 +34,12 @@ export type PlayerSubmission = {
 };
 
 export type SurveyFeedback = {
+  gameId: string;
   submissionId: string;
   playerName: string;
   challengeId: string;
   challengeTitle: string;
+  submittedPrompt: string;
   finalScore: number;
   promptLength: number;
   appUsesByPlayer: number;
@@ -46,5 +49,16 @@ export type SurveyFeedback = {
   worksWellOther?: string;
   improvementOther?: string;
   additionalFeedback: string;
+  submittedAt: string;
+};
+
+export type SubmissionEvent = {
+  gameId: string;
+  submissionId: string;
+  playerName: string;
+  challengeId: string;
+  challengeTitle: string;
+  submittedPrompt: string;
+  generatedImageUrl: string;
   submittedAt: string;
 };

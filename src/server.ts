@@ -3,7 +3,7 @@ import cors from "cors";
 import express from "express";
 import { createGeneratedImageUrl } from "./lib/engine";
 import { compareImageUrls } from "./lib/imageSimilarity";
-import { saveFeedback } from "./lib/feedback";
+import { saveFeedback, saveSubmissionEvent } from "./lib/feedback";
 import {
   createSession,
   createPendingSubmission,
@@ -192,6 +192,17 @@ app.post("/api/submit", async (req, res) => {
 
     const summary = getSessionSummary(sessionId);
 
+    await saveSubmissionEvent({
+      gameId: pending.sessionId ?? summary.sessionId,
+      submissionId: pending.id,
+      playerName: pending.playerName,
+      challengeId: pending.challenge.id,
+      challengeTitle: pending.challenge.title,
+      submittedPrompt: pending.prompt,
+      generatedImageUrl: pending.generatedImageUrl,
+      submittedAt: pending.createdAt,
+    });
+
     res.status(201).json({
       pendingId: pending.id,
       sessionId: summary.sessionId,
@@ -250,10 +261,12 @@ app.post("/api/survey", async (req, res) => {
   const appUsesByPlayer = getPlayerSubmissionCount(submission.playerName, sessionId);
 
   const feedbackPayload: SurveyFeedback = {
+    gameId: submission.sessionId ?? sessionId ?? "main",
     submissionId: submission.id,
     playerName: submission.playerName,
     challengeId: submission.challenge.id,
     challengeTitle: submission.challenge.title,
+    submittedPrompt: submission.prompt,
     finalScore: submission.scores.finalScore,
     promptLength: submission.prompt.length,
     appUsesByPlayer,
