@@ -10,6 +10,7 @@ const SUBMISSION_FILE = path.join(DATA_DIR, "promptwars-submissions.csv");
 let pool: Pool | null = null;
 let feedbackTableReady = false;
 let submissionTableReady = false;
+let feedbackColumnsCache: Set<string> | null = null;
 
 function getFeedbackStorageMode(): "postgres" | "csv" {
   const mode = (process.env.FEEDBACK_STORAGE ?? "auto").trim().toLowerCase();
@@ -48,7 +49,15 @@ async function ensureFeedbackTable() {
 
   const client = await getPool().connect();
   try {
-    await client.query(`
+    const runBestEffort = async (query: string) => {
+      try {
+        await client.query(query);
+      } catch (error) {
+        console.warn("survey_feedback schema sync warning", error);
+      }
+    };
+
+    await runBestEffort(`
       CREATE TABLE IF NOT EXISTS survey_feedback (
         id BIGSERIAL PRIMARY KEY,
         submitted_at TIMESTAMPTZ NOT NULL,
@@ -70,56 +79,56 @@ async function ensureFeedbackTable() {
       )
     `);
 
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS game_id TEXT NOT NULL DEFAULT 'main'`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS room_id TEXT NOT NULL DEFAULT 'main'`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT 'main'`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS submitted_prompt TEXT NOT NULL DEFAULT ''`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS applications_used JSONB NOT NULL DEFAULT '[]'::jsonb`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS works_well_aspects JSONB NOT NULL DEFAULT '[]'::jsonb`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS improvement_areas JSONB NOT NULL DEFAULT '[]'::jsonb`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS works_well_other TEXT`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS improvement_other TEXT`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS additional_feedback TEXT NOT NULL DEFAULT ''`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS apps_used TEXT[] NOT NULL DEFAULT '{}'::text[]`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS aspects_well TEXT[] NOT NULL DEFAULT '{}'::text[]`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS aspects_well_other TEXT`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS improvements_needed TEXT[] NOT NULL DEFAULT '{}'::text[]`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS improvements_other TEXT`,
     );
-    await client.query(
+    await runBestEffort(
       `ALTER TABLE survey_feedback ADD COLUMN IF NOT EXISTS additional_suggestions TEXT`,
     );
 
-    await client.query(
+    await runBestEffort(
       `CREATE INDEX IF NOT EXISTS idx_survey_feedback_submission_id ON survey_feedback(submission_id)`,
     );
     try {
@@ -131,16 +140,34 @@ async function ensureFeedbackTable() {
       // Keep writes working by falling back to delete+insert idempotency.
       console.warn("Unable to create unique index uq_survey_feedback_submission_id", error);
     }
-    await client.query(
+    await runBestEffort(
       `CREATE INDEX IF NOT EXISTS idx_survey_feedback_player_name ON survey_feedback(player_name)`,
     );
-    await client.query(
+    await runBestEffort(
       `CREATE INDEX IF NOT EXISTS idx_survey_feedback_game_id ON survey_feedback(game_id)`,
     );
     feedbackTableReady = true;
   } finally {
     client.release();
   }
+}
+
+async function getFeedbackColumns(): Promise<Set<string>> {
+  if (feedbackColumnsCache) {
+    return feedbackColumnsCache;
+  }
+
+  const result = await getPool().query<{ column_name: string }>(
+    `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'survey_feedback'
+    `,
+  );
+
+  feedbackColumnsCache = new Set(result.rows.map((row) => row.column_name));
+  return feedbackColumnsCache;
 }
 
 async function ensureSubmissionTable() {
@@ -330,66 +357,64 @@ export async function saveFeedback(feedback: SurveyFeedback) {
   }
 
   await ensureFeedbackTable();
+  feedbackColumnsCache = null;
+  const columns = await getFeedbackColumns();
+
+  if (!columns.has("submission_id")) {
+    throw new Error("survey_feedback.submission_id column is required.");
+  }
+
+  const values: unknown[] = [];
+  const valueExpressions: string[] = [];
+  const insertColumns: string[] = [];
+
+  const pushValue = (column: string, value: unknown, cast?: string) => {
+    if (!columns.has(column)) {
+      return;
+    }
+
+    values.push(value);
+    const index = values.length;
+    valueExpressions.push(cast ? `$${index}::${cast}` : `$${index}`);
+    insertColumns.push(column);
+  };
+
+  pushValue("submitted_at", feedback.submittedAt);
+  pushValue("game_id", feedback.gameId);
+  pushValue("room_id", feedback.gameId);
+  pushValue("session_id", feedback.gameId);
+  pushValue("submission_id", feedback.submissionId);
+  pushValue("player_name", feedback.playerName);
+  pushValue("challenge_id", feedback.challengeId);
+  pushValue("challenge_title", feedback.challengeTitle);
+  pushValue("submitted_prompt", feedback.submittedPrompt);
+  pushValue("final_score", feedback.finalScore);
+  pushValue("prompt_length", feedback.promptLength);
+  pushValue("app_uses_by_player", feedback.appUsesByPlayer);
+  pushValue("applications_used", JSON.stringify(feedback.applicationsUsed), "jsonb");
+  pushValue("works_well_aspects", JSON.stringify(feedback.worksWellAspects), "jsonb");
+  pushValue("improvement_areas", JSON.stringify(feedback.improvementAreas), "jsonb");
+  pushValue("works_well_other", feedback.worksWellOther ?? null);
+  pushValue("improvement_other", feedback.improvementOther ?? null);
+  pushValue("additional_feedback", feedback.additionalFeedback);
+  pushValue("apps_used", feedback.applicationsUsed, "text[]");
+  pushValue("aspects_well", feedback.worksWellAspects, "text[]");
+  pushValue("aspects_well_other", feedback.worksWellOther ?? null);
+  pushValue("improvements_needed", feedback.improvementAreas, "text[]");
+  pushValue("improvements_other", feedback.improvementOther ?? null);
+  pushValue("additional_suggestions", feedback.additionalFeedback || null);
+
+  if (insertColumns.length === 0) {
+    throw new Error("survey_feedback table has no writable columns.");
+  }
+
+  await getPool().query(`DELETE FROM survey_feedback WHERE submission_id = $1`, [feedback.submissionId]);
+
   await getPool().query(
     `
-      WITH deleted AS (
-        DELETE FROM survey_feedback
-        WHERE submission_id = $5
-      )
-      INSERT INTO survey_feedback (
-        submitted_at,
-        game_id,
-        room_id,
-        session_id,
-        submission_id,
-        player_name,
-        challenge_id,
-        challenge_title,
-        submitted_prompt,
-        final_score,
-        prompt_length,
-        app_uses_by_player,
-        applications_used,
-        works_well_aspects,
-        improvement_areas,
-        works_well_other,
-        improvement_other,
-        additional_feedback,
-        apps_used,
-        aspects_well,
-        aspects_well_other,
-        improvements_needed,
-        improvements_other,
-        additional_suggestions
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb, $15::jsonb, $16, $17, $18, $19::text[], $20::text[], $21, $22::text[], $23, $24
-      )
+      INSERT INTO survey_feedback (${insertColumns.join(", ")})
+      VALUES (${valueExpressions.join(", ")})
     `,
-    [
-      feedback.submittedAt,
-      feedback.gameId,
-      feedback.gameId,
-      feedback.gameId,
-      feedback.submissionId,
-      feedback.playerName,
-      feedback.challengeId,
-      feedback.challengeTitle,
-      feedback.submittedPrompt,
-      feedback.finalScore,
-      feedback.promptLength,
-      feedback.appUsesByPlayer,
-      JSON.stringify(feedback.applicationsUsed),
-      JSON.stringify(feedback.worksWellAspects),
-      JSON.stringify(feedback.improvementAreas),
-      feedback.worksWellOther ?? null,
-      feedback.improvementOther ?? null,
-      feedback.additionalFeedback,
-      feedback.applicationsUsed,
-      feedback.worksWellAspects,
-      feedback.worksWellOther ?? null,
-      feedback.improvementAreas,
-      feedback.improvementOther ?? null,
-      feedback.additionalFeedback || null,
-    ],
+    values,
   );
 }
