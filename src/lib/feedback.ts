@@ -27,6 +27,14 @@ function getFeedbackStorageMode(): "postgres" | "csv" {
   return resolveDatabaseUrl() ? "postgres" : "csv";
 }
 
+function canFallbackToCsv() {
+  if (process.env.ALLOW_CSV_FALLBACK === "true") {
+    return true;
+  }
+
+  return process.env.NODE_ENV !== "production";
+}
+
 function resolveDatabaseUrl(): string | undefined {
   const onlineUrl = process.env.ONLINE_DATABASE_URL?.trim();
   const localUrl = process.env.LOCAL_DATABASE_URL?.trim();
@@ -612,11 +620,21 @@ export async function saveFeedback(feedback: SurveyFeedback) {
     return;
   }
 
+  const fallbackOrThrow = (context: string, error?: unknown) => {
+    if (canFallbackToCsv()) {
+      console.error(`${context}, falling back to CSV`, error);
+      saveFeedbackToCsv(feedback);
+      return;
+    }
+
+    const message = error instanceof Error ? `${context}: ${error.message}` : context;
+    throw new Error(message);
+  };
+
   try {
     await ensureFeedbackTable();
   } catch (error) {
-    console.error("saveFeedback: ensureFeedbackTable failed, falling back to CSV", error);
-    saveFeedbackToCsv(feedback);
+    fallbackOrThrow("saveFeedback: ensureFeedbackTable failed", error);
     return;
   }
   feedbackColumnsCache = null;
@@ -625,14 +643,12 @@ export async function saveFeedback(feedback: SurveyFeedback) {
   try {
     columns = await getFeedbackColumns();
   } catch (error) {
-    console.error("saveFeedback: getFeedbackColumns failed, falling back to CSV", error);
-    saveFeedbackToCsv(feedback);
+    fallbackOrThrow("saveFeedback: getFeedbackColumns failed", error);
     return;
   }
 
   if (!columns.has("submission_id")) {
-    console.error("saveFeedback: submission_id column missing, falling back to CSV");
-    saveFeedbackToCsv(feedback);
+    fallbackOrThrow("saveFeedback: submission_id column missing");
     return;
   }
 
@@ -677,8 +693,7 @@ export async function saveFeedback(feedback: SurveyFeedback) {
   pushValue("additional_suggestions", feedback.additionalFeedback || null);
 
   if (insertColumns.length === 0) {
-    console.error("saveFeedback: no writable columns, falling back to CSV");
-    saveFeedbackToCsv(feedback);
+    fallbackOrThrow("saveFeedback: no writable columns");
     return;
   }
 
@@ -693,7 +708,6 @@ export async function saveFeedback(feedback: SurveyFeedback) {
       values,
     );
   } catch (error) {
-    console.error("saveFeedback: postgres insert failed, falling back to CSV", error);
-    saveFeedbackToCsv(feedback);
+    fallbackOrThrow("saveFeedback: postgres insert failed", error);
   }
 }
