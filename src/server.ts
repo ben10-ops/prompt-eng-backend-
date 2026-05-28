@@ -220,51 +220,90 @@ app.post("/api/submit", async (req, res) => {
 });
 
 app.post("/api/survey", async (req, res) => {
-  const sessionId = getSessionIdFromRequest(req);
-  const body = req.body as {
-    sessionId?: string;
-    submissionId?: string;
-    applicationsUsed?: string[];
-    worksWellAspects?: string[];
-    improvementAreas?: string[];
-    worksWellOther?: string;
-    improvementOther?: string;
-    additionalFeedback?: string;
-  };
+  try {
+    const sessionId = getSessionIdFromRequest(req);
+    const body = req.body as {
+      sessionId?: string;
+      submissionId?: string;
+      applicationsUsed?: string[];
+      worksWellAspects?: string[];
+      improvementAreas?: string[];
+      worksWellOther?: string;
+      improvementOther?: string;
+      additionalFeedback?: string;
+    };
 
-  const submissionId = body.submissionId?.trim();
-  const applicationsUsed = Array.isArray(body.applicationsUsed)
-    ? body.applicationsUsed.filter((item) => typeof item === "string" && item.trim())
-    : [];
-  const worksWellAspects = Array.isArray(body.worksWellAspects)
-    ? body.worksWellAspects.filter((item) => typeof item === "string" && item.trim())
-    : [];
-  const improvementAreas = Array.isArray(body.improvementAreas)
-    ? body.improvementAreas.filter((item) => typeof item === "string" && item.trim())
-    : [];
-  const worksWellOther = body.worksWellOther?.trim() ?? "";
-  const improvementOther = body.improvementOther?.trim() ?? "";
-  const additionalFeedback = body.additionalFeedback?.trim() ?? "";
+    const submissionId = body.submissionId?.trim();
+    const applicationsUsed = Array.isArray(body.applicationsUsed)
+      ? body.applicationsUsed.filter((item) => typeof item === "string" && item.trim())
+      : [];
+    const worksWellAspects = Array.isArray(body.worksWellAspects)
+      ? body.worksWellAspects.filter((item) => typeof item === "string" && item.trim())
+      : [];
+    const improvementAreas = Array.isArray(body.improvementAreas)
+      ? body.improvementAreas.filter((item) => typeof item === "string" && item.trim())
+      : [];
+    const worksWellOther = body.worksWellOther?.trim() ?? "";
+    const improvementOther = body.improvementOther?.trim() ?? "";
+    const additionalFeedback = body.additionalFeedback?.trim() ?? "";
 
-  if (!submissionId) {
-    res.status(400).json({ message: "submissionId is required." });
-    return;
-  }
+    if (!submissionId) {
+      res.status(400).json({ message: "submissionId is required." });
+      return;
+    }
 
-  const pending = getPendingSubmissionById(submissionId, sessionId);
-  if (!pending) {
-    const finalized = getSubmissionById(submissionId, sessionId);
-    if (finalized) {
-      const retryFeedbackPayload: SurveyFeedback = {
-        gameId: finalized.sessionId ?? sessionId ?? "main",
-        submissionId: finalized.id,
-        playerName: finalized.playerName,
-        challengeId: finalized.challenge.id,
-        challengeTitle: finalized.challenge.title,
-        submittedPrompt: finalized.prompt,
-        finalScore: finalized.scores.finalScore,
-        promptLength: finalized.prompt.length,
-        appUsesByPlayer: getPlayerSubmissionCount(finalized.playerName, sessionId),
+    const pending = getPendingSubmissionById(submissionId, sessionId);
+    if (!pending) {
+      const finalized = getSubmissionById(submissionId, sessionId);
+      if (finalized) {
+        const retryFeedbackPayload: SurveyFeedback = {
+          gameId: finalized.sessionId ?? sessionId ?? "main",
+          submissionId: finalized.id,
+          playerName: finalized.playerName,
+          challengeId: finalized.challenge.id,
+          challengeTitle: finalized.challenge.title,
+          submittedPrompt: finalized.prompt,
+          finalScore: finalized.scores.finalScore,
+          promptLength: finalized.prompt.length,
+          appUsesByPlayer: getPlayerSubmissionCount(finalized.playerName, sessionId),
+          applicationsUsed,
+          worksWellAspects,
+          improvementAreas,
+          worksWellOther,
+          improvementOther,
+          additionalFeedback,
+          submittedAt: new Date().toISOString(),
+        };
+
+        try {
+          await saveFeedback(retryFeedbackPayload);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unable to store feedback.";
+          res.status(500).json({ message });
+          return;
+        }
+
+        res.status(200).json({
+          id: finalized.id,
+          resultUrl: `/result/${finalized.id}`,
+          status: "already_finalized",
+        });
+        return;
+      }
+
+      // Submission not found — server likely restarted and lost ephemeral store.
+      // Save the feedback with whatever we have and return success so the user
+      // is not blocked.
+      const orphanFeedbackPayload: SurveyFeedback = {
+        gameId: sessionId ?? "main",
+        submissionId: submissionId,
+        playerName: "unknown",
+        challengeId: "unknown",
+        challengeTitle: "unknown",
+        submittedPrompt: "",
+        finalScore: 0,
+        promptLength: 0,
+        appUsesByPlayer: 0,
         applicationsUsed,
         worksWellAspects,
         improvementAreas,
@@ -275,62 +314,65 @@ app.post("/api/survey", async (req, res) => {
       };
 
       try {
-        await saveFeedback(retryFeedbackPayload);
+        await saveFeedback(orphanFeedbackPayload);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Unable to store feedback.";
-        res.status(500).json({ message });
-        return;
+        console.warn("Unable to save orphan feedback", { submissionId, error });
       }
 
       res.status(200).json({
-        id: finalized.id,
-        resultUrl: `/result/${finalized.id}`,
-        status: "already_finalized",
+        id: submissionId,
+        resultUrl: null,
+        status: "submission_expired",
       });
       return;
     }
 
-    res.status(404).json({ message: "Submission not found." });
-    return;
-  }
+    const feedbackPayload: SurveyFeedback = {
+      gameId: pending.sessionId ?? sessionId ?? "main",
+      submissionId: pending.id,
+      playerName: pending.playerName,
+      challengeId: pending.challenge.id,
+      challengeTitle: pending.challenge.title,
+      submittedPrompt: pending.prompt,
+      finalScore: pending.scores.finalScore,
+      promptLength: pending.prompt.length,
+      appUsesByPlayer: getPlayerSubmissionCount(pending.playerName, sessionId) + 1,
+      applicationsUsed,
+      worksWellAspects,
+      improvementAreas,
+      worksWellOther,
+      improvementOther,
+      additionalFeedback,
+      submittedAt: new Date().toISOString(),
+    };
 
-  const feedbackPayload: SurveyFeedback = {
-    gameId: pending.sessionId ?? sessionId ?? "main",
-    submissionId: pending.id,
-    playerName: pending.playerName,
-    challengeId: pending.challenge.id,
-    challengeTitle: pending.challenge.title,
-    submittedPrompt: pending.prompt,
-    finalScore: pending.scores.finalScore,
-    promptLength: pending.prompt.length,
-    appUsesByPlayer: getPlayerSubmissionCount(pending.playerName, sessionId) + 1,
-    applicationsUsed,
-    worksWellAspects,
-    improvementAreas,
-    worksWellOther,
-    improvementOther,
-    additionalFeedback,
-    submittedAt: new Date().toISOString(),
-  };
+    try {
+      await saveFeedback(feedbackPayload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to store feedback.";
+      res.status(500).json({ message });
+      return;
+    }
 
-  try {
-    await saveFeedback(feedbackPayload);
+    const submission = finalizePendingSubmission(submissionId, sessionId);
+    if (!submission) {
+      res.status(500).json({ message: "Unable to finalize this submission." });
+      return;
+    }
+
+    res.status(201).json({
+      id: submission.id,
+      resultUrl: `/result/${submission.id}`,
+    });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to store feedback.";
+    console.error("Unhandled /api/survey error", {
+      sessionId: getSessionIdFromRequest(req),
+      body: req.body,
+      error,
+    });
+    const message = error instanceof Error ? error.message : "Unable to submit survey feedback.";
     res.status(500).json({ message });
-    return;
   }
-
-  const submission = finalizePendingSubmission(submissionId, sessionId);
-  if (!submission) {
-    res.status(500).json({ message: "Unable to finalize this submission." });
-    return;
-  }
-
-  res.status(201).json({
-    id: submission.id,
-    resultUrl: `/result/${submission.id}`,
-  });
 });
 
 app.get("/api/submission/:id", (req, res) => {
