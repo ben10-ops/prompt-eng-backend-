@@ -274,18 +274,23 @@ app.post("/api/survey", async (req, res) => {
         submittedAt: new Date().toISOString(),
       };
 
+      let feedbackStored = true;
       try {
         await saveFeedback(retryFeedbackPayload);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Unable to store feedback.";
-        res.status(500).json({ message });
-        return;
+        feedbackStored = false;
+        console.error("saveFeedback retry failed", {
+          submissionId: finalized.id,
+          sessionId: finalized.sessionId ?? sessionId ?? "main",
+          error,
+        });
       }
 
       res.status(200).json({
         id: finalized.id,
         resultUrl: `/result/${finalized.id}`,
         status: "already_finalized",
+        feedbackStored,
       });
       return;
     }
@@ -313,12 +318,16 @@ app.post("/api/survey", async (req, res) => {
     submittedAt: new Date().toISOString(),
   };
 
+  let feedbackStored = true;
   try {
     await saveFeedback(feedbackPayload);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to store feedback.";
-    res.status(500).json({ message });
-    return;
+    feedbackStored = false;
+    console.error("saveFeedback failed", {
+      submissionId: pending.id,
+      sessionId: pending.sessionId ?? sessionId ?? "main",
+      error,
+    });
   }
 
   const submission = finalizePendingSubmission(submissionId, sessionId);
@@ -330,6 +339,7 @@ app.post("/api/survey", async (req, res) => {
   res.status(201).json({
     id: submission.id,
     resultUrl: `/result/${submission.id}`,
+    feedbackStored,
   });
 });
 
