@@ -145,25 +145,13 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 export function createGeneratedImageUrl(prompt: string, challengeId: string): string {
-  const challenge = CHALLENGES.find((item) => item.id === challengeId);
-  const challengeTitle = challenge?.title ?? "";
-  const baseReferencePrompt = CHALLENGE_REFERENCE_PROMPTS[challengeId] ?? challengeTitle;
-  const referencePrompt = applyOrientationOverride(baseReferencePrompt, prompt);
-  const orientationRule = getOrientationRule(prompt);
   const seed = seededNumber(`${challengeId}:${prompt}`);
   const userPrompt = prompt.replace(/\s+/g, " ").trim();
   const optimizedPrompt = [
-    `User prompt (highest priority): ${userPrompt}`,
-    "Follow the user prompt exactly. Do not replace subject, setting, or objects with unrelated content.",
-    "If the user prompt is not about cars, do not introduce cars, racetracks, or automotive elements.",
-    `Challenge reference for style/alignment only: ${referencePrompt}`,
-    orientationRule,
-    "Preserve natural object proportions. No stretched, warped, elongated, or deformed geometry.",
-    "Do not mirror the vehicle direction unless explicitly requested.",
-    "Recreate the target scene as closely as possible while preserving realism.",
+    userPrompt,
     "Photorealistic, physically based rendering, high detail textures.",
     "Accurate perspective, coherent composition, natural lighting, realistic shadows and reflections.",
-    "Cinematic but faithful to prompt details, no text overlays, no watermark.",
+    "No text overlays, no watermark.",
     "Sharp focus, 8k quality, professional color grading.",
   ].join(" ");
 
