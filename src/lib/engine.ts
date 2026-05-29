@@ -212,7 +212,7 @@ export function scorePrompt(
   const similarity = clamp(
     Math.round(
       options?.imageSimilarity !== undefined
-        ? heuristicSimilarity * 0.7 + options.imageSimilarity * 0.3
+        ? options.imageSimilarity * 0.7 + heuristicSimilarity * 0.3
         : heuristicSimilarity,
     ),
     0,
