@@ -192,10 +192,12 @@ app.post("/api/submit", async (req, res) => {
     let imageSimilarity: number | undefined = undefined;
     if (shouldRunImageSimilarity()) {
       try {
+        logMemory("before-compare");
         imageSimilarity = await compareImageUrls(
           toAbsoluteUrl(challenge.imageUrl),
           generatedImageUrl,
         );
+        logMemory(`after-compare score=${imageSimilarity}`);
       } catch {
         imageSimilarity = undefined;
       }
@@ -418,6 +420,16 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
   res.status(500).json({ message });
 });
 
+function logMemory(label: string) {
+  const mem = process.memoryUsage();
+  const mb = (bytes: number) => `${Math.round(bytes / 1024 / 1024)}MB`;
+  console.log(
+    `[MEM] ${label} | RSS: ${mb(mem.rss)} | Heap: ${mb(mem.heapUsed)}/${mb(mem.heapTotal)} | External: ${mb(mem.external)}`
+  );
+}
+
 app.listen(port, () => {
   console.log(`Prompt Wars backend running on http://localhost:${port}`);
+  logMemory("startup");
+  setInterval(() => logMemory("heartbeat"), 60_000);
 });
