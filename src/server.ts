@@ -15,6 +15,7 @@ import {
   getRecentPendingSubmissions,
   getRecentSubmissions,
   getSessionSummary,
+  startNextBatch,
   getSubmissionById,
   getSubmissions,
   isSessionAtCapacity,
@@ -136,9 +137,12 @@ app.get("/api/state", (req, res) => {
 
 app.post("/api/state", (_req, res) => {
   const sessionId = getSessionIdFromRequest(_req);
-  const challenge = rotateChallenge(sessionId);
+  const body = _req.body as { resetLeaderboard?: boolean | string };
+  const resetLeaderboard =
+    body.resetLeaderboard === true || body.resetLeaderboard === "true";
+  const challenge = resetLeaderboard ? startNextBatch(sessionId) : rotateChallenge(sessionId);
   const summary = getSessionSummary(sessionId);
-  res.json({ challenge, sessionId: summary.sessionId });
+  res.json({ challenge, sessionId: summary.sessionId, resetLeaderboard });
 });
 
 app.get("/api/survey", (_req, res) => {

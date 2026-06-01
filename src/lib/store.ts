@@ -134,6 +134,20 @@ export function rotateChallenge(sessionId?: string) {
   return getCurrentChallenge(session.id);
 }
 
+export function startNextBatch(sessionId?: string) {
+  const session = ensureSession(sessionId);
+  const now = new Date().toISOString();
+
+  session.currentChallengeIndex = (session.currentChallengeIndex + 1) % CHALLENGES.length;
+  session.createdAt = now;
+  session.lastChallengeRotationAt = now;
+  session.submissions = [];
+  session.pendingSubmissions = [];
+
+  persistStore();
+  return getCurrentChallenge(session.id);
+}
+
 export function getSubmissions(sessionId?: string) {
   const session = ensureSession(sessionId);
   return [...session.submissions].sort((a, b) => b.scores.finalScore - a.scores.finalScore);
