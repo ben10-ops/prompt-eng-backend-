@@ -216,6 +216,7 @@ export function createPendingSubmission(input: {
   prompt: string;
   generatedImageUrl?: string;
   imageSimilarity?: number;
+  forceZeroScore?: boolean;
 }) {
   const session = ensureSession(input.sessionId);
   const normalizedName = input.playerName.trim().toLowerCase();
@@ -230,10 +231,21 @@ export function createPendingSubmission(input: {
   const challenge = getCurrentChallenge(session.id);
   const generatedImageUrl =
     input.generatedImageUrl ?? createGeneratedImageUrl(input.prompt, challenge.id);
-  const scores = scorePrompt(input.prompt, challenge, {
+  let scores = scorePrompt(input.prompt, challenge, {
     imageSimilarity: input.imageSimilarity,
   });
-  const persona = getPromptPersona(input.prompt, scores.finalScore);
+  let persona = getPromptPersona(input.prompt, scores.finalScore);
+
+  if (input.forceZeroScore) {
+    scores = {
+      similarity: 0,
+      promptQuality: 0,
+      styleAlignment: 0,
+      detailCoverage: 0,
+      finalScore: 0,
+    };
+    persona = getPromptPersona("", 0);
+  }
 
   const submission: PlayerSubmission = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,

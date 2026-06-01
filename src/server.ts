@@ -171,17 +171,27 @@ app.post("/api/submit", async (req, res) => {
       sessionId?: string;
       playerName?: string;
       prompt?: string;
+      autoSubmitted?: boolean;
     };
 
     const playerName = body.playerName?.trim();
-    const prompt = body.prompt?.trim();
+    const prompt = body.prompt?.trim() ?? "";
+    const autoSubmitted = Boolean(body.autoSubmitted === true || body.autoSubmitted === "true");
 
-    if (!playerName || !prompt) {
-      res.status(400).json({ message: "playerName and prompt are required." });
+    if (!playerName) {
+      res.status(400).json({ message: "playerName is required." });
       return;
     }
 
-    if (prompt.length < 15) {
+    // Allow empty or short prompts when this request was triggered by the
+    // client's auto-submit (timer). In that case we accept the submission
+    // and later mark the score as zero. For manual submits, enforce length.
+    if (!prompt && !autoSubmitted) {
+      res.status(400).json({ message: "prompt is required." });
+      return;
+    }
+
+    if (prompt.length < 15 && !autoSubmitted) {
       res.status(400).json({ message: "Prompt is too short. Add more scene detail." });
       return;
     }
@@ -209,6 +219,7 @@ app.post("/api/submit", async (req, res) => {
       prompt,
       generatedImageUrl,
       imageSimilarity,
+      forceZeroScore: autoSubmitted && !prompt,
     });
 
     const summary = getSessionSummary(sessionId);
