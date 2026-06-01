@@ -171,12 +171,12 @@ app.post("/api/submit", async (req, res) => {
       sessionId?: string;
       playerName?: string;
       prompt?: string;
-      autoSubmitted?: boolean;
+      autoSubmitted?: boolean | string;
     };
 
     const playerName = body.playerName?.trim();
     const prompt = body.prompt?.trim() ?? "";
-    const autoSubmitted = Boolean(body.autoSubmitted === true || body.autoSubmitted === "true");
+    const autoSubmitted = body.autoSubmitted === true || body.autoSubmitted === "true";
 
     if (!playerName) {
       res.status(400).json({ message: "playerName is required." });
