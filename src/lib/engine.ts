@@ -52,12 +52,15 @@ function scoreTextAlignment(prompt: string, challengeId: string): number {
   const referenceTokens = tokenize(reference);
 
   if (referenceTokens.length === 0) {
-    return 60;
+    return 50;
   }
 
   const matched = referenceTokens.filter((token) => promptTokens.has(token)).length;
   const ratio = matched / referenceTokens.length;
-  return clamp(Math.round(45 + ratio * 55), 30, 99);
+
+  // Strict: 0% keyword match = 5pts, 100% match = 95pts.
+  // No artificial floor — random / off-topic prompts score near zero.
+  return clamp(Math.round(5 + ratio * 90), 5, 95);
 }
 
 function getOrientationRule(prompt: string): string {
@@ -202,13 +205,30 @@ export function scorePrompt(
 
   const cinematicHits = cinematicTerms.filter((t) => text.includes(t)).length;
   const technicalHits = technicalTerms.filter((t) => text.includes(t)).length;
-  const richness = clamp(Math.round((tokenCount / 45) * 100), 20, 100);
+  const richness = clamp(Math.round((tokenCount / 45) * 100), 10, 100);
+
+  // ── Primary gate: seeded prompt keyword match ──────────────────────────────
+  // This is the first and strictest signal. All other bonuses are scaled by
+  // how well the user's prompt matches the reference prompt's key tokens.
   const textSimilarity = scoreTextAlignment(prompt, challenge.id);
+
+  // alignmentFactor: 0.15 when completely off-topic, 1.0 when fully aligned.
+  // This gates cinematic/technical/richness bonuses so random words or a
+  // wrong subject (e.g. writing "dog" for a car image) stay near the floor.
+  const alignmentFactor = clamp(textSimilarity / 70, 0.15, 1.0);
+
   const orientationRule = getOrientationRule(prompt);
   const orientationBonus =
     orientationRule.includes("face right") || orientationRule.includes("face left") ? 6 : 0;
 
-  const heuristicSimilarity = clamp(textSimilarity + orientationBonus, 35, 99);
+  // Heuristic similarity: text alignment + orientation bonus, no artificial floor
+  const heuristicSimilarity = clamp(
+    Math.round(textSimilarity + orientationBonus * alignmentFactor),
+    5,
+    97,
+  );
+
+  // Final similarity: image MSE (primary) blended with heuristic (secondary)
   const similarity = clamp(
     Math.round(
       options?.imageSimilarity !== undefined
@@ -218,13 +238,27 @@ export function scorePrompt(
     0,
     100,
   );
-  const promptQuality = clamp(Math.round(40 + richness * 0.55 + technicalHits * 2), 35, 99);
-  const styleAlignment = clamp(
-    Math.round(45 + cinematicHits * 6 + (challenge.category === "hard" ? 5 : 0)),
-    35,
-    99,
+
+  // ── Secondary: bonuses gated by alignmentFactor ────────────────────────────
+  // Cinematic / technical terms still reward good prompts, but only
+  // when the core subject matches. Off-topic prompts get near-zero bonuses.
+  const promptQuality = clamp(
+    Math.round((30 + richness * 0.5 + technicalHits * 2) * alignmentFactor),
+    5,
+    95,
   );
-  const detailCoverage = clamp(Math.round(35 + tokenCount * 1.2 + technicalHits * 4), 20, 99);
+  const styleAlignment = clamp(
+    Math.round(
+      (35 + cinematicHits * 6 + (challenge.category === "hard" ? 5 : 0)) * alignmentFactor,
+    ),
+    5,
+    95,
+  );
+  const detailCoverage = clamp(
+    Math.round((25 + tokenCount * 1.0 + technicalHits * 3) * alignmentFactor),
+    5,
+    95,
+  );
 
   const finalScore = Math.round(
     similarity * 0.5 +
