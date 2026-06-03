@@ -2,7 +2,7 @@ import "dotenv/config";
 import cors from "cors";
 import express from "express";
 import { createGeneratedImageUrl, scorePrompt } from "./lib/engine";
-import { cacheImageBuffer, generateImageViaHF, getImageBuffer, isHFConfigured } from "./lib/imageGeneration";
+import { cacheImageBuffer, fetchPollinationsBuffer, generateImageViaHF, getImageBuffer, isHFConfigured } from "./lib/imageGeneration";
 import { compareImageUrls, compareTargetUrlWithBuffer } from "./lib/imageSimilarity";
 import { getFeedbackEntries, saveFeedback, saveSubmissionEvent } from "./lib/feedback";
 import {
@@ -235,22 +235,31 @@ app.post("/api/submit", async (req, res) => {
       surveyUrl: `/survey/${pending.id}?sessionId=${encodeURIComponent(summary.sessionId)}`,
     });
 
-    // ── Background: HF generation + comparison (fire-and-forget) ────────────
+    // ── Background: image generation + comparison (fire-and-forget) ────────────
     // Runs after the response is sent. Updates the pending submission in-place
     // so the result page (loaded after the user completes the survey) has the
-    // real image and scored values. If this finishes before finalization the
-    // user sees accurate data; if it hasn't finished yet, the fallback stands.
+    // real image and scored values.
     if (!autoSubmitted && prompt) {
       void (async () => {
         try {
           const imageId = `img-${pending.id}`;
           let generatedBuffer: Buffer | null = null;
 
-          if (isHFConfigured()) {
+          // 1. Try HF FLUX (needs HF_TOKEN env var)
+          if (process.env.HF_TOKEN?.trim()) {
             const finalPrompt = `${prompt.trim()}, photorealistic, high quality, professional photography`;
             logMemory("bg:before-hf-generate");
             generatedBuffer = await generateImageViaHF(finalPrompt);
             logMemory("bg:after-hf-generate");
+          }
+
+          // 2. Fallback: fetch Pollinations server-side from Render's IP.
+          //    Render's outbound IP is NOT the same as the office/home network IP
+          //    that gets rate-limited, so this reliably returns an image.
+          if (!generatedBuffer) {
+            logMemory("bg:before-pollinations-fetch");
+            generatedBuffer = await fetchPollinationsBuffer(pollinationsUrl);
+            logMemory("bg:after-pollinations-fetch");
           }
 
           let generatedImageUrl = pollinationsUrl;
