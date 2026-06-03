@@ -157,7 +157,7 @@ export function createGeneratedImageUrl(prompt: string, challengeId: string): st
 
   return `https://image.pollinations.ai/prompt/${encodeURIComponent(
     optimizedPrompt,
-  )}?model=flux&width=1024&height=1024&seed=${seed}&enhance=true&nologo=true&safe=true`;
+  )}?model=flux&width=1024&height=1024&seed=${seed}&safe=true`;
 }
 
 export function createFallbackImageUrl(prompt: string, challengeId: string): string {
