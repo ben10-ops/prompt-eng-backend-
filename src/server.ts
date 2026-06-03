@@ -2,7 +2,7 @@ import "dotenv/config";
 import cors from "cors";
 import express from "express";
 import { createGeneratedImageUrl, scorePrompt } from "./lib/engine";
-import { cacheImageBuffer, fetchPollinationsBuffer, generateImageViaHF, getImageBuffer, isHFConfigured } from "./lib/imageGeneration";
+import { cacheImageBuffer, fetchPollinationsBuffer, generateImageViaHF, getImageBuffer, getSourceUrl, isHFConfigured, storeSourceUrl } from "./lib/imageGeneration";
 import { compareImageUrls, compareTargetUrlWithBuffer } from "./lib/imageSimilarity";
 import { getFeedbackEntries, saveFeedback, saveSubmissionEvent } from "./lib/feedback";
 import {
@@ -265,6 +265,7 @@ app.post("/api/submit", async (req, res) => {
           let generatedImageUrl = pollinationsUrl;
           if (generatedBuffer) {
             cacheImageBuffer(imageId, generatedBuffer);
+            storeSourceUrl(imageId, pollinationsUrl);
             generatedImageUrl = `${backendPublicUrl}/api/image/${imageId}`;
           }
 
@@ -497,14 +498,32 @@ app.get("/api/submission/:id", (req, res) => {
   res.status(404).json({ message: "Submission not found." });
 });
 
-// Serve HF-generated images from the in-memory buffer cache.
-// CORS is already handled globally so the frontend can load these cross-origin.
-app.get("/api/image/:id", (req, res) => {
-  const buffer = getImageBuffer(req.params.id);
+// Serve HF-generated or Pollinations-proxied images from the in-memory buffer cache.
+// If the buffer was evicted (Render spin-down), re-fetch from the original source URL
+// using Render's own IP so the office-network rate limit is never hit.
+app.get("/api/image/:id", async (req, res) => {
+  let buffer = getImageBuffer(req.params.id);
+
+  if (!buffer) {
+    // Buffer evicted — try to re-fetch from the stored source URL.
+    const sourceUrl = getSourceUrl(req.params.id);
+    if (sourceUrl) {
+      try {
+        buffer = await fetchPollinationsBuffer(sourceUrl) ?? undefined;
+        if (buffer) {
+          cacheImageBuffer(req.params.id, buffer);
+        }
+      } catch {
+        buffer = undefined;
+      }
+    }
+  }
+
   if (!buffer) {
     res.status(404).json({ message: "Image not found or expired." });
     return;
   }
+
   res.setHeader("Content-Type", "image/jpeg");
   res.setHeader("Cache-Control", "public, max-age=3600, immutable");
   res.end(buffer);

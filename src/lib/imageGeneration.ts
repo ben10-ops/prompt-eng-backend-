@@ -111,6 +111,20 @@ export async function fetchPollinationsBuffer(url: string): Promise<Buffer | nul
   }
 }
 
+// Always attempt server-side generation.
 export function isHFConfigured(): boolean {
-  return true; // always attempt server-side generation (HF if token, Pollinations fallback)
+  return true;
+}
+
+// ── Source URL map ────────────────────────────────────────────────────────────
+// Maps imageId → original Pollinations/source URL so the /api/image/:id
+// endpoint can re-fetch if the buffer was evicted after a Render spin-down.
+const sourceUrlMap = new Map<string, string>();
+
+export function storeSourceUrl(id: string, url: string): void {
+  sourceUrlMap.set(id, url);
+}
+
+export function getSourceUrl(id: string): string | undefined {
+  return sourceUrlMap.get(id);
 }
