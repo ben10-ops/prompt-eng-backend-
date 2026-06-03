@@ -279,6 +279,34 @@ export function createPendingSubmission(input: {
   return submission;
 }
 
+/**
+ * Update a pending submission's generatedImageUrl and/or scores in-place.
+ * Called by the background image-generation task once it completes.
+ */
+export function updatePendingSubmission(
+  id: string,
+  updates: {
+    generatedImageUrl?: string;
+    scores?: PlayerSubmission["scores"];
+  },
+) {
+  for (const session of getAllSessions()) {
+    const submission = session.pendingSubmissions.find((s) => s.id === id);
+    if (!submission) {
+      continue;
+    }
+    if (updates.generatedImageUrl !== undefined) {
+      submission.generatedImageUrl = updates.generatedImageUrl;
+    }
+    if (updates.scores !== undefined) {
+      submission.scores = updates.scores;
+    }
+    persistStore();
+    return true;
+  }
+  return false;
+}
+
 export function finalizePendingSubmission(id: string, sessionId?: string) {
   const session = sessionId ? ensureSession(sessionId) : undefined;
   const targetSessions = session ? [session] : getAllSessions();

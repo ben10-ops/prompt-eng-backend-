@@ -1,8 +1,9 @@
 import "dotenv/config";
 import cors from "cors";
 import express from "express";
-import { createGeneratedImageUrl } from "./lib/engine";
-import { compareImageUrls } from "./lib/imageSimilarity";
+import { createGeneratedImageUrl, scorePrompt } from "./lib/engine";
+import { cacheImageBuffer, generateImageViaHF, getImageBuffer, isHFConfigured } from "./lib/imageGeneration";
+import { compareImageUrls, compareTargetUrlWithBuffer } from "./lib/imageSimilarity";
 import { getFeedbackEntries, saveFeedback, saveSubmissionEvent } from "./lib/feedback";
 import {
   createSession,
@@ -20,6 +21,7 @@ import {
   getSubmissions,
   isSessionAtCapacity,
   rotateChallenge,
+  updatePendingSubmission,
 } from "./lib/store";
 import { SurveyFeedback } from "./lib/types";
 
@@ -27,6 +29,14 @@ const app = express();
 const port = Number(process.env.PORT ?? 4000);
 const frontendUrl =
   process.env.FRONTEND_URL ?? "https://prompt-war-six.vercel.app";
+
+// Public URL of THIS backend — used to build absolute /api/image/:id URLs.
+// Render sets RENDER_EXTERNAL_URL automatically; fall back to localhost for dev.
+const backendPublicUrl = (
+  process.env.RENDER_EXTERNAL_URL ??
+  process.env.BACKEND_PUBLIC_URL ??
+  `http://localhost:${port}`
+).replace(/\/$/, "");
 
 const allowedOrigins = new Set([
   frontendUrl,
@@ -201,32 +211,86 @@ app.post("/api/submit", async (req, res) => {
     }
 
     const challenge = getCurrentChallenge(sessionId);
-    const generatedImageUrl = toAbsoluteUrl(createGeneratedImageUrl(prompt, challenge.id));
 
-    let imageSimilarity: number | undefined = undefined;
-    if (shouldRunImageSimilarity()) {
-      try {
-        logMemory("before-compare");
-        imageSimilarity = await compareImageUrls(
-          toAbsoluteUrl(challenge.imageUrl),
-          generatedImageUrl,
-        );
-        logMemory(`after-compare score=${imageSimilarity}`);
-      } catch {
-        imageSimilarity = undefined;
-      }
-    }
+    // ── Immediate: create pending submission with Pollinations fallback URL ──
+    // The response is sent right away so the browser is never blocked by
+    // slow image generation (Render free tier drops requests after 30 s).
+    const pollinationsUrl = toAbsoluteUrl(createGeneratedImageUrl(prompt, challenge.id));
 
     const pending = createPendingSubmission({
       sessionId,
       playerName,
       prompt,
-      generatedImageUrl,
-      imageSimilarity,
+      generatedImageUrl: pollinationsUrl,
+      imageSimilarity: undefined,
       forceZeroScore: autoSubmitted && !prompt,
     });
 
     const summary = getSessionSummary(sessionId);
+
+    // Return to the client immediately — do NOT await image generation.
+    res.status(201).json({
+      pendingId: pending.id,
+      sessionId: summary.sessionId,
+      surveyUrl: `/survey/${pending.id}?sessionId=${encodeURIComponent(summary.sessionId)}`,
+    });
+
+    // ── Background: HF generation + comparison (fire-and-forget) ────────────
+    // Runs after the response is sent. Updates the pending submission in-place
+    // so the result page (loaded after the user completes the survey) has the
+    // real image and scored values. If this finishes before finalization the
+    // user sees accurate data; if it hasn't finished yet, the fallback stands.
+    if (!autoSubmitted && prompt) {
+      void (async () => {
+        try {
+          const imageId = `img-${pending.id}`;
+          let generatedBuffer: Buffer | null = null;
+
+          if (isHFConfigured()) {
+            const finalPrompt = `${prompt.trim()}, photorealistic, high quality, professional photography`;
+            logMemory("bg:before-hf-generate");
+            generatedBuffer = await generateImageViaHF(finalPrompt);
+            logMemory("bg:after-hf-generate");
+          }
+
+          let generatedImageUrl = pollinationsUrl;
+          if (generatedBuffer) {
+            cacheImageBuffer(imageId, generatedBuffer);
+            generatedImageUrl = `${backendPublicUrl}/api/image/${imageId}`;
+          }
+
+          let imageSimilarity: number | undefined;
+          if (shouldRunImageSimilarity()) {
+            try {
+              logMemory("bg:before-compare");
+              if (generatedBuffer) {
+                imageSimilarity = await compareTargetUrlWithBuffer(
+                  toAbsoluteUrl(challenge.imageUrl),
+                  generatedBuffer,
+                );
+              } else {
+                imageSimilarity = await compareImageUrls(
+                  toAbsoluteUrl(challenge.imageUrl),
+                  generatedImageUrl,
+                );
+              }
+              logMemory(`bg:after-compare score=${imageSimilarity}`);
+            } catch {
+              imageSimilarity = undefined;
+            }
+          }
+
+          const updatedScores = scorePrompt(prompt, challenge, { imageSimilarity });
+          updatePendingSubmission(pending.id, {
+            generatedImageUrl,
+            scores: updatedScores,
+          });
+          console.log(`[bg] Updated submission ${pending.id}: image=${generatedImageUrl.slice(0, 60)} score=${updatedScores.finalScore}`);
+        } catch (bgError) {
+          console.error(`[bg] Background image gen failed for ${pending.id}:`, bgError);
+        }
+      })();
+    }
 
     try {
       await saveSubmissionEvent({
@@ -243,12 +307,6 @@ app.post("/api/submit", async (req, res) => {
       // Keep gameplay responsive even if telemetry write fails.
       console.error("saveSubmissionEvent failed", error);
     }
-
-    res.status(201).json({
-      pendingId: pending.id,
-      sessionId: summary.sessionId,
-      surveyUrl: `/survey/${pending.id}?sessionId=${encodeURIComponent(summary.sessionId)}`,
-    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to submit prompt.";
     res.status(500).json({ message });
@@ -428,6 +486,19 @@ app.get("/api/submission/:id", (req, res) => {
   }
 
   res.status(404).json({ message: "Submission not found." });
+});
+
+// Serve HF-generated images from the in-memory buffer cache.
+// CORS is already handled globally so the frontend can load these cross-origin.
+app.get("/api/image/:id", (req, res) => {
+  const buffer = getImageBuffer(req.params.id);
+  if (!buffer) {
+    res.status(404).json({ message: "Image not found or expired." });
+    return;
+  }
+  res.setHeader("Content-Type", "image/jpeg");
+  res.setHeader("Cache-Control", "public, max-age=3600, immutable");
+  res.end(buffer);
 });
 
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
