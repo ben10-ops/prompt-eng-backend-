@@ -46,36 +46,18 @@ function tokenize(value: string): string[] {
     .filter((token) => token.length > 2);
 }
 
-// Broad automotive/photography vocabulary that counts as alignment even when
-// the user paraphrases rather than copies the reference prompt word-for-word.
-const AUTOMOTIVE_VOCAB = new Set([
-  "volkswagen", "vw", "golf", "gti", "beetle", "id4", "car", "vehicle", "automotive",
-  "hatchback", "coupe", "suv", "crossover",
-  "headlight", "wheel", "metallic", "glossy", "chrome", "paint",
-  "asphalt", "road", "coastal", "alpine", "harbor", "racetrack", "track", "night",
-  "golden", "cinematic", "photorealistic", "advertisement", "commercial",
-  "angle", "perspective", "three-quarter", "dramatic", "lighting", "reflection",
-]);
-
 function scoreTextAlignment(prompt: string, challengeId: string): number {
   const reference = CHALLENGE_REFERENCE_PROMPTS[challengeId] ?? "";
   const promptTokens = new Set(tokenize(prompt));
   const referenceTokens = tokenize(reference);
 
   if (referenceTokens.length === 0) {
-    return 50;
+    return 60;
   }
 
   const matched = referenceTokens.filter((token) => promptTokens.has(token)).length;
   const ratio = matched / referenceTokens.length;
-
-  // Vocabulary bonus: reward automotive/photography domain knowledge even when
-  // the user describes the same scene in different words (paraphrasing).
-  const vocabHits = [...promptTokens].filter((t) => AUTOMOTIVE_VOCAB.has(t)).length;
-  const vocabBonus = clamp(vocabHits * 2, 0, 18);
-
-  // 0% keyword match + 0 vocab hits = 25pts; 100% match + full vocab bonus = 95pts.
-  return clamp(Math.round(25 + ratio * 52 + vocabBonus), 25, 95);
+  return clamp(Math.round(45 + ratio * 55), 30, 99);
 }
 
 function getOrientationRule(prompt: string): string {
@@ -165,14 +147,17 @@ function clamp(value: number, min: number, max: number): number {
 export function createGeneratedImageUrl(prompt: string, challengeId: string): string {
   const seed = seededNumber(`${challengeId}:${prompt}`);
   const userPrompt = prompt.replace(/\s+/g, " ").trim();
-  // Keep the user's prompt as-is so the generated image reflects exactly what they wrote.
-  // Minimal quality suffix only — no enhance (which would override the user's intent)
-  // and no safe filter (which incorrectly blocks automotive/car imagery).
-  const finalPrompt = `${userPrompt}, photorealistic, high quality, professional photography, 8k`;
+  const optimizedPrompt = [
+    userPrompt,
+    "Photorealistic, physically based rendering, high detail textures.",
+    "Accurate perspective, coherent composition, natural lighting, realistic shadows and reflections.",
+    "No text overlays, no watermark.",
+    "Sharp focus, 8k quality, professional color grading.",
+  ].join(" ");
 
   return `https://image.pollinations.ai/prompt/${encodeURIComponent(
-    finalPrompt,
-  )}?model=flux&width=1280&height=720&seed=${seed}&nologo=true&enhance=false`;
+    optimizedPrompt,
+  )}?model=flux&width=1024&height=1024&seed=${seed}&enhance=true&nologo=true&safe=true`;
 }
 
 export function createFallbackImageUrl(prompt: string, challengeId: string): string {
@@ -201,84 +186,29 @@ export function scorePrompt(
     "realistic",
     "ultra detailed",
     "camera",
-    "bokeh",
-    "dramatic",
-    "atmosphere",
-    "dynamic",
-    "contrast",
-    "exposure",
-    "photorealistic",
-    "advertisement",
-    "commercial",
-    "editorial",
   ];
 
-  // Automotive & scene vocabulary — replaces the old enterprise-tech terms that
-  // never appeared in car photography prompts and always yielded 0 hits.
-  const automotiveTerms = [
-    "volkswagen",
-    "golf",
-    "gti",
-    "beetle",
-    "id.4",
-    "id4",
-    "vw",
-    "hatchback",
-    "coupe",
-    "crossover",
-    "suv",
-    "vehicle",
-    "automotive",
-    "car",
-    "headlight",
-    "taillight",
-    "wheel",
-    "rim",
-    "hood",
-    "asphalt",
-    "road",
-    "track",
-    "racetrack",
-    "promenade",
-    "coastal",
-    "alpine",
-    "harbor",
-    "metallic",
-    "chrome",
-    "glossy",
-    "paint",
-    "bodywork",
-    "three-quarter",
-    "angle",
-    "perspective",
+  const technicalTerms = [
+    "enterprise",
+    "dashboard",
+    "holographic",
+    "systems",
+    "control",
+    "workspace",
+    "operations",
+    "architecture",
+    "infrastructure",
   ];
 
   const cinematicHits = cinematicTerms.filter((t) => text.includes(t)).length;
-  const automotiveHits = automotiveTerms.filter((t) => text.includes(t)).length;
-  const richness = clamp(Math.round((tokenCount / 45) * 100), 10, 100);
-
-  // ── Primary gate: seeded prompt keyword match ──────────────────────────────
-  // This is the first and strictest signal. All other bonuses are scaled by
-  // how well the user's prompt matches the reference prompt's key tokens.
+  const technicalHits = technicalTerms.filter((t) => text.includes(t)).length;
+  const richness = clamp(Math.round((tokenCount / 45) * 100), 20, 100);
   const textSimilarity = scoreTextAlignment(prompt, challenge.id);
-
-  // alignmentFactor: 0.4 when completely off-topic, 1.0 when fully aligned.
-  // Raised floor so everyone gets meaningful bonuses — scoring is lenient
-  // and rewards effort rather than punishing creative wording choices.
-  const alignmentFactor = clamp(textSimilarity / 80, 0.4, 1.0);
-
   const orientationRule = getOrientationRule(prompt);
   const orientationBonus =
     orientationRule.includes("face right") || orientationRule.includes("face left") ? 6 : 0;
 
-  // Heuristic similarity: text alignment + orientation bonus, no artificial floor
-  const heuristicSimilarity = clamp(
-    Math.round(textSimilarity + orientationBonus * alignmentFactor),
-    5,
-    97,
-  );
-
-  // Final similarity: image MSE (primary) blended with heuristic (secondary)
+  const heuristicSimilarity = clamp(textSimilarity + orientationBonus, 35, 99);
   const similarity = clamp(
     Math.round(
       options?.imageSimilarity !== undefined
@@ -288,26 +218,13 @@ export function scorePrompt(
     0,
     100,
   );
-
-  // ── Secondary: bonuses gated by alignmentFactor ────────────────────────────
-  // automotiveHits + cinematicHits reward domain knowledge and style vocabulary.
-  const promptQuality = clamp(
-    Math.round((40 + richness * 0.55 + automotiveHits * 3 + cinematicHits * 1) * alignmentFactor),
-    20,
-    98,
-  );
+  const promptQuality = clamp(Math.round(40 + richness * 0.55 + technicalHits * 2), 35, 99);
   const styleAlignment = clamp(
-    Math.round(
-      (44 + cinematicHits * 7 + automotiveHits * 2 + (challenge.category === "hard" ? 6 : 0)) * alignmentFactor,
-    ),
-    20,
-    98,
+    Math.round(45 + cinematicHits * 6 + (challenge.category === "hard" ? 5 : 0)),
+    35,
+    99,
   );
-  const detailCoverage = clamp(
-    Math.round((34 + tokenCount * 1.1 + automotiveHits * 4) * alignmentFactor),
-    20,
-    98,
-  );
+  const detailCoverage = clamp(Math.round(35 + tokenCount * 1.2 + technicalHits * 4), 20, 99);
 
   const finalScore = Math.round(
     similarity * 0.5 +

@@ -60,22 +60,3 @@ export async function compareImageUrls(
 
   return mseSimilarity(target, generated);
 }
-
-/**
- * Compare the target image (fetched by URL) against an already-in-memory
- * generated image buffer.  Avoids a second network round-trip and works even
- * when the generated image is served from the backend itself.
- */
-export async function compareTargetUrlWithBuffer(
-  targetImageUrl: string,
-  generatedBuffer: Buffer,
-): Promise<number> {
-  const [targetBuffer] = await Promise.all([fetchImageBuffer(targetImageUrl)]);
-
-  const [target, generated] = await Promise.all([
-    Jimp.read(targetBuffer),
-    Jimp.read(generatedBuffer),
-  ]);
-
-  return mseSimilarity(target, generated);
-}
